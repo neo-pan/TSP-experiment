@@ -13,6 +13,14 @@ def cal_size_list(in_dim, out_dim, layer_num):
 
 
 class MLP(nn.Module):
+    r"""
+    Multilayer Perceptron
+    
+    Args:
+    - size_list
+    - activation
+    - bias
+    """
     def __init__(
         self,
         size_list: np.ndarray,
@@ -36,7 +44,7 @@ class MLP(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        assert x.shape[-1] == self.in_dim
+        assert x.shape[-1] == self.in_dim, f"{x.shape} -- {self.in_dim}"
         out = self.mlp(x)
 
         return out
@@ -59,9 +67,8 @@ class GATEncoder(nn.Module):
 
         self.gnn_layer_list = nn.ModuleList(gnn_layer_list)
 
-    def forward(self, data: Data) -> torch.Tensor:
-        x = data.x
-        edge_index = data.edge_index
+    def forward(self, x: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
+        
         for gnn_layer in self.gnn_layer_list:
             x = gnn_layer(x, edge_index)
 

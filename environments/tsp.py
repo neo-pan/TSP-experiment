@@ -3,65 +3,112 @@
 
 from typing import Tuple
 
+import torch
 import numpy as np
 from scipy.spatial.distance import cdist
+from typing import NamedTuple
 
 from .base import _BaseEnv
 
 
+class TSPState(NamedTuple):
+    first_node: torch.Tensor
+    pre_node: torch.Tensor
+    avail_mask: torch.Tensor
+
+
 class TSPEnv(_BaseEnv):
-    def __init__(self, node_pos: np.ndarray) -> None:
-        assert node_pos.shape[1]==2
-        self._node_pos = node_pos
-        self._node_num = node_pos.shape[0]
-        self._distance_matrix = cdist(node_pos, node_pos, metric="euclidean")
-        self._avail_action = set(range(1,self._node_num))
-        self._step_seq = 0
-        self._visit_seq = np.zeros((self._node_num,1), dtype=np.int)
-        self._visit_mask = np.zeros_like(self._visit_seq, dtype=np.bool)
-        self._visit_mask[0] = True
-        self._act_list = [0]
-        self.tour_len = 0
+    def __init__(self, node_pos: torch.Tensor=None) -> None:
+        super().__init__()
+        self._need_reset = True
+        if node_pos is not None:
+            self.reset(node_pos)
 
-    def step(self, action: int) -> Tuple[np.ndarray, float, bool, dict]:
-        assert self._step_seq<self._node_num, f"TSPEnv is already terminated"
-        assert action in self._avail_action, f"Action-{action} is not available"
+    def step(self, action: torch.Tensor) -> Tuple[NamedTuple, torch.Tensor, bool, dict]:
+        assert not self._need_reset
+        assert list(action.shape) == [self.batch_size, 1]
+        assert self._step_seq < self.num_nodes, f"TSPEnv is already terminated"
+        assert self._avail_mask.gather(
+            1, action
+        ).all(), f"Action not available, {self._avail_mask.gather(1, action)}"
 
-        self._avail_action.remove(action)
         self._step_seq += 1
-        self._visit_seq[action] = self._step_seq
-        self._visit_mask[action] = True
+        self._avail_mask[self._batch_idx, action.squeeze()] = False
         last_act = self._act_list[-1]
         self._act_list.append(action)
-        self.tour_len += self._distance_matrix[last_act][action]
+        self.tour_len += self._distance_matrix[
+            self._batch_idx, last_act.squeeze(), action.squeeze()
+        ]
 
-        if self._step_seq == (self._node_num-1):
-            assert (len(self._avail_action)==0 and len(self._act_list)==self._node_num)
+        if self._step_seq == (self.num_nodes - 1):
             done = True
-            self.tour_len += self._distance_matrix[0][action]
-        elif self._step_seq > (self._node_num-1):
+            self.tour_len += self._distance_matrix[
+                self._batch_idx, action.squeeze(), self._act_list[0].squeeze()
+            ]
+        elif self._step_seq > (self.num_nodes - 1):
             raise ValueError
         else:
             done = False
 
-        reward = -self.tour_len if done else 0.0
+        reward = -self.tour_len if done else torch.zeros(self.batch_size)
 
-        return self._visit_seq.copy(), reward, done, {"mask": self._visit_mask.copy()}
+        return (
+            TSPState(
+                first_node=torch.zeros_like(action, dtype=torch.long),
+                pre_node=action,
+                avail_mask=self._avail_mask.clone(),
+            ),
+            reward,
+            done,
+            {},
+        )
 
     @property
-    def done(self):
+    def done(self) -> bool:
+        assert not self._need_reset
         assert self._step_seq < self._node_num
-        return self._step_seq == (self._node_num-1)
+        if self._step_seq == (self._node_num - 1):
+            self._need_reset = True
+            return True
+        return False
 
-    def random_action(self) -> int:
-        assert self._avail_action, "No available action"
-        return np.random.choice(list(self._avail_action))
+    def random_action(self) -> torch.Tensor:
+        assert not self._need_reset
+        action = self._avail_mask.type(torch.float).multinomial(1)
+        assert self._avail_mask.gather(1, action).all()
+        return action
 
-    def reset(self) -> None:
-        self._avail_action = set(range(1,self._node_num))
-        self._visit_seq.fill(0)
-        self._visit_mask.fill(False)
-        self._visit_mask[0] = True
-        self._act_list = [0]
+    def reset(self, node_pos: torch.Tensor) -> TSPState:
+        if self._need_reset:
+            self._need_reset = False
+        self.batch_size, self.num_nodes, pos_dim = node_pos.shape
+        self.device = node_pos.device
+        assert pos_dim == 2
+        self._node_pos = node_pos
+        self._distance_matrix = (
+            node_pos[:, :, None, :] - node_pos[:, None, :, :]
+        ).norm(p=2, dim=-1)
         self._step_seq = 0
-        self.tour_len = 0
+        self._avail_mask = torch.ones(
+            (self.batch_size, self.num_nodes), dtype=np.bool, device=self.device
+        )
+        self._avail_mask[:, 0] = False
+        self._batch_idx = torch.arange(
+            self.batch_size, dtype=torch.long, device=self.device
+        )
+        self._act_list = []
+        self._act_list.append(
+            torch.zeros((self.batch_size, 1), dtype=torch.long, device=self.device)
+        )
+        self.tour_len = torch.zeros(
+            (self.batch_size), dtype=torch.float, device=self.device
+        )
+
+        return TSPState(
+                first_node=torch.zeros((self.batch_size,1), dtype=torch.long, device=self.device),
+                pre_node=torch.zeros((self.batch_size,1), dtype=torch.long, device=self.device),
+                avail_mask=self._avail_mask.clone(),
+            )
+        
+    def __repr__(self) -> str:
+        return f"TSP Environment, with {self.batch_size} graphs of size {self.num_nodes}"

@@ -20,6 +20,11 @@ def gen_random_graph(graph_size: int) -> Data:
     pos = torch.FloatTensor(size=(graph_size, 2)).uniform_(0, 1)
     graph = from_networkx(g)
     graph.pos = pos
+    node_feat = torch.tensor(
+        [[0, 1] if i == 0 else [1, 0] for i in range(graph_size)],
+        dtype=torch.float,
+    )
+    graph.x = torch.cat([node_feat, pos], dim=-1)
 
     return graph
 

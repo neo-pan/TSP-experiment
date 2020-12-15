@@ -119,7 +119,7 @@ class AttentionDecoder(nn.Module):
             log_prob.view(bsz, num_heads, tgt_len, src_len).sum(dim=1) / num_heads
         )
 
-        return log_prob.squeeze()
+        return log_prob.squeeze(1)
 
     def precompute_keys(self, key: torch.Tensor) -> None:
         assert key.size(-1) == self.embed_dim

@@ -85,7 +85,7 @@ def get_args():
     parser.add_argument("--no_cuda", action="store_true", help="Disable CUDA")
 
     parser.add_argument("--warmup_epochs", type=int, default=1)
-    parser.add_argument("--warmup_batch_size", type=int, default=1024)
+    parser.add_argument("--warmup_batch_size", type=int, default=256)
 
     # Misc
     parser.add_argument("--no_progress_bar", action="store_true", help="Disable tqdm")

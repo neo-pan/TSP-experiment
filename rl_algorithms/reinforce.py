@@ -37,10 +37,10 @@ def reinforce_train_batch(
     # Calculate policy's log_likelihood and reward
     log_likelihood = _calc_log_likelihood(_log_p, a)
     # reward is a negative value of tour lenth
-    reward = reward_s[-1].unsqueeze(-1)
+    reward = -(reward_s[-1].unsqueeze(-1))
     # let baseline to predict positive value
-    bl_val, bl_loss = baseline.eval(batch, -reward)
-    rl_loss = (((-reward) - bl_val) * log_likelihood).mean()
+    bl_val, bl_loss = baseline.eval(batch, reward)
+    rl_loss = ((reward - bl_val) * log_likelihood).mean()
     loss = rl_loss + bl_loss
 
     optimizer.zero_grad()
@@ -50,15 +50,15 @@ def reinforce_train_batch(
     # Logging
     if step % int(args.log_step) == 0:
         log_values(
-            -reward,
-            bl_val,
-            epoch,
-            batch_id,
-            step,
-            log_likelihood,
-            rl_loss,
-            bl_loss,
-            logger,
+            cost=-reward,
+            bl_val=bl_val,
+            epoch=epoch,
+            batch_id=batch_id,
+            step=step,
+            log_likelihood=log_likelihood,
+            reinforce_loss=rl_loss,
+            bl_loss=bl_loss,
+            logger=logger,
         )
 
 

@@ -70,10 +70,10 @@ class TSPAgent(nn.Module):
         # Pooling graph features
         self._graph_feat = self.pooling_func(x, data.batch)
         # Precompute attention decoder keys based on graph node features
-        key = to_dense_batch(x, data.batch)[0]
+        key = self._dense_x
         # Change its shape from [batch_size, max_num_nodes, embed_dim]
         # to [max_num_nodes, batch_size, embed_dim] for attention layer
-        key = key.permute(1, 0, 2)
+        key = key.permute(1, 0, 2)  
         self._precomputed_k = self.decoder.precompute_keys(key)
 
         d = data.clone()
@@ -121,7 +121,7 @@ class TSPAgent(nn.Module):
         return query
 
     def _select_node(self, log_p: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-        assert log_p.shape == mask.shape
+        assert log_p.shape == mask.shape, f"{log_p.shape}, {mask.shape}"
         probs = log_p.exp()
         if self.decode_type == "greedy":
             _, selected = probs.max(1)
@@ -173,7 +173,7 @@ class TSPCritic(nn.Module):
         # Pooling graph features
         graph_feat = self.pooling_func(x, data.batch)
         baseline = self.out_proj(graph_feat)
-        assert baseline.shape == target.shape
+        assert baseline.shape == target.shape, f"{baseline.shape}, {target.shape}"
         
         return baseline.detach(), F.mse_loss(baseline, target.detach())
 

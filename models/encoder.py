@@ -5,7 +5,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch_geometric.data import Data
-from torch_geometric.nn import GATConv as _GATConv
+from torch_geometric.nn import GATConv as _GATConv, TransformerConv as _TransformerConv
 
 
 def cal_size_list(in_dim, out_dim, layer_num):
@@ -56,11 +56,12 @@ class GATEncoder(nn.Module):
         self.embed_dim = embed_dim
         self.num_layers = num_layers
         self.heads = heads
+        assert (self.embed_dim % self.heads) == 0
         gnn_layer_list = []
         for _ in range(self.num_layers):
-            gnn_layer = _GATConv(
+            gnn_layer = _TransformerConv(
                 in_channels=self.embed_dim,
-                out_channels=self.embed_dim,
+                out_channels=self.embed_dim // self.heads,
                 heads=self.heads,
             )
             gnn_layer_list.append(gnn_layer)

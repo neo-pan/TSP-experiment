@@ -19,7 +19,8 @@ from rl_algorithms.reinforce import reinforce_train_batch
 
 
 def warmup_baseline(baseline, dataset, env, optimizer, args):
-    for batch in DataLoader(dataset, args.warmup_batch_size):
+    print(f"Warmup Critic Baseline with training dataset")
+    for batch in tqdm(DataLoader(dataset, args.warmup_batch_size)):
         batch = batch.to(args.device)
         node_pos = to_dense_batch(batch.pos, batch.batch)[0]
         done = False
@@ -41,6 +42,7 @@ def validate(model, dataset, env, args):
     # Validate
     print("Validating...")
     cost = rollout(model, dataset, env, args)
+    assert cost.size(0)==len(dataset)
     avg_cost = -cost.mean()
     print(
         "Validation overall avg_cost: {} +- {}".format(
@@ -71,7 +73,7 @@ def rollout(model, dataset, env, args):
 
     return torch.cat(
         [
-            eval_model_bat(bat)
+            eval_model_bat(bat.to(args.device))
             for bat in DataLoader(dataset, batch_size=args.eval_batch_size)
         ],
         0,

@@ -108,7 +108,7 @@ def run_concorde(dataset_path):
         name = f"{dataset_name}-{i}"
         loc = data.pos.numpy().tolist()
         len, _, _ = solve_concorde_log(executable, save_path, name, loc)
-        data.len = torch.tensor(len)
+        data.concorde_len = torch.tensor(len)
         len_list.append(len)
 
     return dataset, len_list

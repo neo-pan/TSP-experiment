@@ -18,13 +18,19 @@ class AttentionDecoder(nn.Module):
     """
 
     def __init__(
-        self, query_dim: int, embed_dim: int, num_heads: int = 1, bias: bool = True
+        self,
+        query_dim: int,
+        embed_dim: int,
+        num_heads: int = 1,
+        bias: bool = True,
+        tanh_clipping: int = 10.0,
     ) -> None:
         super().__init__()
         self.query_dim = query_dim
         self.embed_dim = embed_dim
         self.num_heads = num_heads
         self.bias = bias
+        self.tanh_clipping = tanh_clipping
         self._precompute = False
         self.query_proj = nn.Linear(self.query_dim, self.embed_dim, bias=self.bias)
         self.key_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=self.bias)
@@ -58,9 +64,11 @@ class AttentionDecoder(nn.Module):
         num_heads = self.num_heads
         tgt_len, bsz, query_dim = query.size()
         assert query_dim == self.query_dim
-        assert precomputed_k is not None or key is not None, f"Keys need to be input or precompute"
+        assert (
+            precomputed_k is not None or key is not None
+        ), f"Keys need to be input or precompute"
         if key is None:
-            src_len, _,  embed_dim = precomputed_k.size()
+            src_len, _, embed_dim = precomputed_k.size()
         else:
             src_len, _, embed_dim = key.size()
         head_dim = embed_dim // num_heads
@@ -109,6 +117,9 @@ class AttentionDecoder(nn.Module):
 
         attn_output_weights = torch.bmm(q, k.transpose(1, 2))
         assert list(attn_output_weights.size()) == [bsz * num_heads, tgt_len, src_len]
+
+        if self.tanh_clipping > 0:
+            attn_output_weights = torch.tanh(attn_output_weights) * self.tanh_clipping
 
         if attn_mask is not None:
             if attn_mask.dtype == torch.bool:

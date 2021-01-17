@@ -5,7 +5,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch_geometric.data import Data
-from torch_geometric.nn import GATConv as _GATConv, TransformerConv as _TransformerConv
+from torch_geometric.nn import GATConv as _GATConv, TransformerConv as _TransformerConv, BatchNorm, InstanceNorm
 
 
 def cal_size_list(in_dim, out_dim, layer_num):
@@ -50,14 +50,15 @@ class MLP(nn.Module):
         return out
 
 
-class GATEncoder(nn.Module):
-    def __init__(self, embed_dim: int, num_layers: int, heads: int = 1) -> None:
+class GNNEncoder(nn.Module):
+    def __init__(self, embed_dim: int, num_layers: int, heads: int = 8, normalization: str="batch") -> None:
         super().__init__()
         self.embed_dim = embed_dim
         self.num_layers = num_layers
         self.heads = heads
         assert (self.embed_dim % self.heads) == 0
         gnn_layer_list = []
+        norm_list = []
         for _ in range(self.num_layers):
             gnn_layer = _TransformerConv(
                 in_channels=self.embed_dim,
@@ -65,12 +66,22 @@ class GATEncoder(nn.Module):
                 heads=self.heads,
             )
             gnn_layer_list.append(gnn_layer)
+            if normalization=="batch":
+                norm = BatchNorm(self.embed_dim)
+                norm_list.append(norm)
+            else:
+                raise ValueError(f"Wrong Normalization Method: {normalization}")
+
 
         self.gnn_layer_list = nn.ModuleList(gnn_layer_list)
+        self.norm_list = nn.ModuleList(norm_list)
+        
+
 
     def forward(self, x: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
         
-        for gnn_layer in self.gnn_layer_list:
+        for gnn_layer, norm in zip(self.gnn_layer_list, self.norm_list):
             x = gnn_layer(x, edge_index)
+            x = norm(x)
 
         return x

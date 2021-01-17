@@ -7,7 +7,7 @@ from typing import Any, Tuple
 from torch_geometric.nn import global_add_pool, global_max_pool, global_mean_pool
 from torch_geometric.data import Data, Batch
 from torch_geometric.utils.to_dense_batch import to_dense_batch
-from .encoder import cal_size_list, MLP, GATEncoder
+from .encoder import cal_size_list, MLP, GNNEncoder
 from .decoder import AttentionDecoder
 
 
@@ -22,20 +22,28 @@ class TSPAgent(nn.Module):
         self.encoder_num_heads = args.encoder_num_heads
         self.decoder_num_heads = args.decoder_num_heads
         self.bias = args.bias
+        self.tanh_clipping = args.tanh_clipping
         self.pooling_method = args.pooling_method
         assert self.pooling_method in ["add", "max", "mean"]
         self.decode_type = args.decode_type
         assert self.decode_type in ["greedy", "sampling"]
         self.pooling_func = globals()[f"global_{self.pooling_method}_pool"]
+        self.normalization = args.normalization
+        assert self.normalization in ["batch", "instance"]
         linear_size_list = cal_size_list(
             self.input_dim, self.embed_dim, self.num_embed_layers
         )
+
         self.linear_embedder = MLP(linear_size_list, bias=self.bias)
-        self.encoder = GATEncoder(
-            self.embed_dim, self.num_gnn_layers, self.encoder_num_heads
+        self.encoder = GNNEncoder(
+            self.embed_dim, self.num_gnn_layers, self.encoder_num_heads, self.normalization
         )
+
+        self.graph_proj = nn.Linear(self.embed_dim, self.embed_dim, self.bias)
+        self.step_proj = nn.Linear(self.embed_dim * 2, self.embed_dim *2, self.bias)
+
         self.decoder = AttentionDecoder(
-            self.embed_dim * 3, self.embed_dim, self.decoder_num_heads, self.bias
+            self.embed_dim * 3, self.embed_dim, self.decoder_num_heads, self.bias, self.tanh_clipping
         )
 
     def set_decode_type(self, decode_type: str) -> None:
@@ -123,6 +131,8 @@ class TSPAgent(nn.Module):
     def _select_node(self, log_p: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         assert log_p.shape == mask.shape, f"{log_p.shape}, {mask.shape}"
         probs = log_p.exp()
+        assert (probs == probs).all(), "Probs should not contain any nans"
+        
         if self.decode_type == "greedy":
             _, selected = probs.max(1)
             selected = selected.unsqueeze(-1)
@@ -139,43 +149,3 @@ class TSPAgent(nn.Module):
         else:
             assert False, "Unknown decode type"
         return selected
-
-class TSPCritic(nn.Module):
-    def __init__(self, args: Any) -> None:
-        super().__init__()
-        self.args = args
-        self.input_dim = args.input_dim
-        self.embed_dim = args.embed_dim
-        self.num_embed_layers = args.num_embed_layers
-        self.num_gnn_layers = args.num_gnn_layers
-        self.encoder_num_heads = args.encoder_num_heads
-        self.bias = args.bias
-        self.pooling_method = args.pooling_method
-        assert self.pooling_method in ["add", "max", "mean"]
-        self.pooling_func = globals()[f"global_{self.pooling_method}_pool"]
-        linear_size_list = cal_size_list(
-            self.input_dim, self.embed_dim, self.num_embed_layers
-        )
-        self.linear_embedder = MLP(linear_size_list, bias=self.bias)
-        self.encoder = GATEncoder(
-            self.embed_dim, self.num_gnn_layers, self.encoder_num_heads
-        )
-        out_size_list = cal_size_list(self.embed_dim, 1, 1)
-        self.out_proj = MLP(out_size_list, bias=self.bias)
-        
-    def eval(self, data: Batch, target: torch.Tensor) -> torch.Tensor:
-        assert data.x.size(-1) == self.input_dim, f"{data.x.size()} -- {self.input_dim}"
-        # Linear embed
-        x = self.linear_embedder(data.x)
-        edge_index = data.edge_index
-        # GNN encoding graph node embeddings
-        x = self.encoder(x, edge_index)
-        # Pooling graph features
-        graph_feat = self.pooling_func(x, data.batch)
-        baseline = self.out_proj(graph_feat)
-        assert baseline.shape == target.shape, f"{baseline.shape}, {target.shape}"
-        
-        return baseline.detach(), F.mse_loss(baseline, target.detach())
-
-class RolloutBaseline(nn.Module):
-    pass

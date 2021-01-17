@@ -14,7 +14,8 @@ from tqdm import tqdm
 from args import get_args
 from datasets.tsp import TSPDataset
 from environments.tsp import TSPEnv
-from models.tsp_agents import TSPAgent, TSPCritic
+from models.tsp_agent import TSPAgent
+from models.tsp_baseline import CriticBaseline, ExponentialBaseline, RolloutBaseline
 from rl_algorithms.reinforce import reinforce_train_batch
 
 
@@ -81,7 +82,7 @@ def rollout(model, dataset, env, args):
 
 
 if __name__ == "__main__":
-    args = get_args()
+    args = get_args(None)
     # Pretty print the run args
     pp.pprint(vars(args))
 
@@ -111,10 +112,10 @@ if __name__ == "__main__":
 
     env = TSPEnv()
     model = TSPAgent(args).to(args.device)
-    baseline = TSPCritic(args).to(args.device)
+    baseline = ExponentialBaseline(args).to(args.device)
     optimizer = optim.Adam(
         [{"params": model.parameters(), "lr": args.lr_model}]
-        + [{"params": baseline.parameters(), "lr": args.lr_critic}]
+        # + [{"params": baseline.parameters(), "lr": args.lr_critic}]
     )
     lr_scheduler = optim.lr_scheduler.LambdaLR(
         optimizer, lambda epoch: args.lr_decay ** epoch

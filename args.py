@@ -32,6 +32,10 @@ def get_args(args):
     parser.add_argument(
         "--val_dataset", type=str, default=None, help="Dataset file to use for validation",
     )
+    parser.add_argument(
+        "--train_dataset", type=str, default=None, help="Dataset file to use for training",
+    )
+
 
     # Model
     parser.add_argument("--input_dim", type=int, default=4)

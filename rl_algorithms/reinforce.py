@@ -120,4 +120,6 @@ def log_values(cost, grad_norms, bl_val, epoch, batch_id, step, log_likelihood, 
 
     logger.add_scalar("critic_loss", bl_loss.item(), step)
     if not batch_id % 10:
+        num_step, num_graph, num_node = log_p.shape
         logger.add_histogram("first_step_prob", log_p.cpu()[0][0].exp().squeeze(), step)
+        logger.add_histogram("mid_prob", log_p.cpu()[num_step//2][0].exp().squeeze(), step)

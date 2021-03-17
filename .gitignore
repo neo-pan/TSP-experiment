@@ -3,6 +3,7 @@ __pycache__/
 FAKEDataset/
 concorde_baseline/concorde/
 datasets/test/
+datasets/*.pt
 logs/
 outputs/
 .ipynb_checkpoints/

@@ -86,7 +86,7 @@ if __name__ == "__main__":
 
     # Optionally configure tensorboard
     tb_logger = SummaryWriter(os.path.join(args.log_dir, "{}_{}".format(args.problem, args.graph_size), args.run_name))
-    tb_logger.add_hparams(vars(args), {"date": np.array((datetime.today().day))})
+    tb_logger.add_hparams(vars(args), {"date": np.array((datetime.today().day))}, run_name=args.run_name)
 
     os.makedirs(args.save_dir, exist_ok=True)
     # Save arguments so exact configuration can always be found
@@ -134,7 +134,7 @@ if __name__ == "__main__":
             step = epoch * (args.epoch_size // args.batch_size)
             start_time = time.time()
             tb_logger.add_scalar("learnrate_pg0", optimizer.param_groups[0]["lr"], step)
-            training_dataset = TSPDataset(size=args.epoch_size, args=args)
+            training_dataset = TSPDataset(size=args.epoch_size, args=args, load_path=args.train_dataset)
             training_dataloader = DataLoader(training_dataset, batch_size=args.batch_size)
 
             if args.warmup_epochs > 0 and epoch < args.warmup_epochs:

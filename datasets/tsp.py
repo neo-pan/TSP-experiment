@@ -60,10 +60,11 @@ graph_gen_func = {
 
 
 class TSPDataset(InMemoryDataset):
-    def __init__(self, size, device=None, train_flag=False, transform=None, pre_filter=None, args=None):
+    def __init__(self, size, device=None, train_flag=False, transform=None, pre_filter=None, args=None, load_path=None):
         self.size, self.train_flag = size, train_flag
         self.device = device
         self.args = args
+        self.load_path = load_path
         self.classification_flag = False
         self.gen_graph = graph_gen_func.get(args.graph_type, None)
         assert self.gen_graph, f"Wrong graph type: {args.graph_type}"
@@ -86,12 +87,15 @@ class TSPDataset(InMemoryDataset):
     def download(self):
         pass
 
-    def generate_data_list(self):
-        data_list = [self._create(idx) for idx in range(self.size)]
+    def get_data_list(self):
+        if self.load_path:
+            data_list = torch.load(self.load_path)
+        else:
+            data_list = [self._create(idx) for idx in range(self.size)]
         return data_list
 
     def process(self):
-        data_list = self.generate_data_list()
+        data_list = self.get_data_list()
         self.__data_list__ = data_list
         if self.pre_filter is not None:
             data_list = [data for data in data_list if self.pre_filter(data)]

@@ -44,6 +44,9 @@ class TSPAgent(nn.Module):
             self.embed_dim, self.embed_dim, self.decoder_num_heads, bias=False, tanh_clipping=self.tanh_clipping
         )
 
+        self.W_placeholder = nn.Parameter(torch.Tensor(2 * self.embed_dim))
+        self.W_placeholder.data.uniform_(-1, 1)  # Placeholder should be in range of activations
+
     def set_decode_type(self, decode_type: str) -> None:
         assert decode_type in ["greedy", "sampling"]
         self.decode_type = decode_type
@@ -60,9 +63,10 @@ class TSPAgent(nn.Module):
         self, state: TSPState, dense_x: torch.Tensor, graph_feat: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         batch_size, num_nodes, embed_dim = dense_x.shape
-        assert (
-            list(state.first_node.shape) == list(state.pre_node.shape) == [batch_size, 1]
-        ), f"{state.first_node.shape}-{state.pre_node.shape}-{batch_size}"
+        assert state.first_node is None or list(state.first_node.shape) == list(state.pre_node.shape) == [
+            batch_size,
+            1,
+        ], f"{state.first_node.shape}-{state.pre_node.shape}-{batch_size}"
 
         assert list(state.avail_mask.shape) == [
             batch_size,
@@ -87,12 +91,14 @@ class TSPAgent(nn.Module):
         batch_size, num_nodes, embed_dim = dense_x.shape
 
         graph_context = self.graph_proj(graph_feat)
-
-        step_context = self.step_proj(
-            dense_x.gather(
-                1, torch.cat((state.first_node, state.pre_node), 1)[:, :, None].expand(batch_size, 2, embed_dim),
-            ).view(batch_size, -1)
-        )
+        if state.first_node is not None:
+            step_context = self.step_proj(
+                dense_x.gather(
+                    1, torch.cat((state.first_node, state.pre_node), 1)[:, :, None].expand(batch_size, 2, embed_dim),
+                ).view(batch_size, -1)
+            )
+        else:
+            step_context = self.step_proj(self.W_placeholder.expand(batch_size, -1))
 
         query = (graph_context + step_context).unsqueeze(0)
         assert list(query.shape) == [1, batch_size, embed_dim], query.shape

@@ -31,13 +31,9 @@ class CriticBaseline(nn.Module, Baseline):
         self.pooling_method = args.pooling_method
         assert self.pooling_method in ["add", "max", "mean"]
         self.pooling_func = globals()[f"global_{self.pooling_method}_pool"]
-        linear_size_list = cal_size_list(
-            self.input_dim, self.embed_dim, self.num_embed_layers
-        )
+        linear_size_list = cal_size_list(self.input_dim, self.embed_dim, self.num_embed_layers)
         self.linear_embedder = MLP(linear_size_list, bias=self.bias)
-        self.encoder = GNNEncoder(
-            self.embed_dim, self.num_gnn_layers, self.encoder_num_heads
-        )
+        self.encoder = GNNEncoder(self.embed_dim, self.num_gnn_layers, self.encoder_num_heads)
         out_size_list = cal_size_list(self.embed_dim, 1, 1)
         self.out_proj = MLP(out_size_list, bias=self.bias)
 
@@ -78,7 +74,7 @@ class ExponentialBaseline(Baseline):
             v = self.beta * self.v + (1.0 - self.beta) * target.mean()
 
         self.v = v.detach()  # Detach since we never want to backprop
-        return self.v, torch.tensor(0)  # No loss
+        return self.v, torch.tensor(0, dtype=torch.float, requires_grad=True)  # No loss
 
     def state_dict(self):
         return {"v": self.v}

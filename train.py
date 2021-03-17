@@ -3,6 +3,8 @@ import math
 import os
 import pprint as pp
 import time
+from datetime import datetime
+import numpy as np
 
 import torch
 import torch.optim as optim
@@ -43,13 +45,9 @@ def validate(model, dataset, env, args):
     # Validate
     print("Validating...")
     cost = rollout(model, dataset, env, args)
-    assert cost.size(0)==len(dataset)
+    assert cost.size(0) == len(dataset)
     avg_cost = -cost.mean()
-    print(
-        "Validation overall avg_cost: {} +- {}".format(
-            avg_cost, torch.std(cost) / math.sqrt(len(cost))
-        )
-    )
+    print("Validation overall avg_cost: {} +- {}".format(avg_cost, torch.std(cost) / math.sqrt(len(cost))))
 
     return avg_cost
 
@@ -65,19 +63,16 @@ def rollout(model, dataset, env, args):
         reward_s = []
         done = False
         state = env.reset(node_pos)
-        bat = model.encode(bat)
+        embed_data = model.init_embed(bat)
+        dense_x, graph_feat = model.encoder.encode(embed_data)
         while not done:
-            action, _ = model(state)
+            action, _ = model(state, dense_x, graph_feat)
             state, reward, done, _ = env.step(action)
             reward_s.append(reward)
         return reward_s[-1].cpu()
 
     return torch.cat(
-        [
-            eval_model_bat(bat.to(args.device))
-            for bat in DataLoader(dataset, batch_size=args.eval_batch_size)
-        ],
-        0,
+        [eval_model_bat(bat.to(args.device)) for bat in DataLoader(dataset, batch_size=args.eval_batch_size)], 0,
     )
 
 
@@ -90,13 +85,10 @@ if __name__ == "__main__":
     torch.manual_seed(args.seed)
 
     # Optionally configure tensorboard
-    tb_logger = SummaryWriter(
-        os.path.join(
-            args.log_dir, "{}_{}".format(args.problem, args.graph_size), args.run_name
-        )
-    )
+    tb_logger = SummaryWriter(os.path.join(args.log_dir, "{}_{}".format(args.problem, args.graph_size), args.run_name))
+    tb_logger.add_hparams(vars(args), {"date": np.array((datetime.today().day))})
 
-    os.makedirs(args.save_dir)
+    os.makedirs(args.save_dir, exist_ok=True)
     # Save arguments so exact configuration can always be found
     with open(os.path.join(args.save_dir, "args.json"), "w") as f:
         json.dump(vars(args), f, indent=True)
@@ -117,9 +109,7 @@ if __name__ == "__main__":
         [{"params": model.parameters(), "lr": args.lr_model}]
         # + [{"params": baseline.parameters(), "lr": args.lr_critic}]
     )
-    lr_scheduler = optim.lr_scheduler.LambdaLR(
-        optimizer, lambda epoch: args.lr_decay ** epoch
-    )
+    lr_scheduler = optim.lr_scheduler.LambdaLR(optimizer, lambda epoch: args.lr_decay ** epoch)
 
     # Load saved data
     if load_data:
@@ -130,71 +120,38 @@ if __name__ == "__main__":
         if args.device is torch.device("cuda"):
             torch.cuda.set_rng_state_all(load_data["cuda_rng_state"])
     if args.load_path:
-        epoch_resume = int(
-            os.path.splitext(os.path.split(args.load_path)[-1])[0].split("-")[1]
-        )
+        epoch_resume = int(os.path.splitext(os.path.split(args.load_path)[-1])[0].split("-")[1])
         args.epoch_start = epoch_resume + 1
-    val_dataset = TSPDataset(
-        size=args.val_size,
-        device=args.device,
-        min_num_node=args.graph_size,
-        max_num_node=args.graph_size,
-    )
+    val_dataset = TSPDataset(size=args.val_size, args=args)
 
     if args.eval_only:
         validate(model, val_dataset, env, args)
     else:
         for epoch in range(args.epoch_start, args.epoch_start + args.n_epochs):
             print(
-                "Start train epoch {}, lr={} for run {}".format(
-                    epoch, optimizer.param_groups[0]["lr"], args.run_name
-                )
+                "Start train epoch {}, lr={} for run {}".format(epoch, optimizer.param_groups[0]["lr"], args.run_name)
             )
             step = epoch * (args.epoch_size // args.batch_size)
             start_time = time.time()
             tb_logger.add_scalar("learnrate_pg0", optimizer.param_groups[0]["lr"], step)
-            training_dataset = TSPDataset(
-                args.epoch_size,
-                device=torch.device("cpu"),
-                min_num_node=args.graph_size,
-                max_num_node=args.graph_size,
-            )
-            training_dataloader = DataLoader(
-                training_dataset, batch_size=args.batch_size
-            )
+            training_dataset = TSPDataset(size=args.epoch_size, args=args)
+            training_dataloader = DataLoader(training_dataset, batch_size=args.batch_size)
 
             if args.warmup_epochs > 0 and epoch < args.warmup_epochs:
                 warmup_baseline(baseline, training_dataset, env, optimizer, args)
 
             model.train()
             model.set_decode_type(args.decode_type)
-            for batch_id, batch in enumerate(
-                tqdm(training_dataloader, disable=args.no_progress_bar)
-            ):
+            for batch_id, batch in enumerate(tqdm(training_dataloader, disable=args.no_progress_bar)):
                 reinforce_train_batch(
-                    model,
-                    baseline,
-                    optimizer,
-                    batch,
-                    epoch,
-                    batch_id,
-                    step,
-                    env,
-                    tb_logger,
-                    args,
+                    model, baseline, optimizer, batch, epoch, batch_id, step, env, tb_logger, args,
                 )
                 step += 1
 
             epoch_duration = time.time() - start_time
-            print(
-                "Finished epoch {}, took {} s".format(
-                    epoch, time.strftime("%H:%M:%S", time.gmtime(epoch_duration))
-                )
-            )
+            print("Finished epoch {}, took {} s".format(epoch, time.strftime("%H:%M:%S", time.gmtime(epoch_duration))))
 
-            if (
-                args.checkpoint_epochs != 0 and epoch % args.checkpoint_epochs == 0
-            ) or epoch == args.n_epochs - 1:
+            if (args.checkpoint_epochs != 0 and epoch % args.checkpoint_epochs == 0) or epoch == args.n_epochs - 1:
                 print("Saving model and state...")
                 torch.save(
                     {

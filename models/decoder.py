@@ -7,23 +7,17 @@ import torch.nn.functional as F
 
 
 class AttentionDecoder(nn.Module):
-    r"""
-    Attention Based Decoder, compute log probabilities between `query` and `key`.
+    """Attention Based Decoder, compute log probabilities between `query` and `key`.
 
-    Args:
-    - query_dim
-    - embed_dim
-    - num_heads
-    - bias
+    Attributes:
+        query_dim
+        embed_dim
+        num_heads
+        bias
     """
 
     def __init__(
-        self,
-        query_dim: int,
-        embed_dim: int,
-        num_heads: int = 1,
-        bias: bool = True,
-        tanh_clipping: int = 10.0,
+        self, query_dim: int, embed_dim: int, num_heads: int = 1, bias: bool = True, tanh_clipping: int = 10.0,
     ) -> None:
         super().__init__()
         self.query_dim = query_dim
@@ -64,9 +58,7 @@ class AttentionDecoder(nn.Module):
         num_heads = self.num_heads
         tgt_len, bsz, query_dim = query.size()
         assert query_dim == self.query_dim
-        assert (
-            precomputed_k is not None or key is not None
-        ), f"Keys need to be input or precompute"
+        assert precomputed_k is not None or key is not None, f"Keys need to be input or precompute"
         if key is None:
             src_len, _, embed_dim = precomputed_k.size()
         else:
@@ -74,9 +66,7 @@ class AttentionDecoder(nn.Module):
         head_dim = embed_dim // num_heads
         scaling = float(head_dim) ** -0.5
         assert embed_dim == self.embed_dim
-        assert (
-            head_dim * num_heads == embed_dim
-        ), "embed_dim must be divisible by num_heads"
+        assert head_dim * num_heads == embed_dim, "embed_dim must be divisible by num_heads"
 
         q = self.query_proj(query)
         if precomputed_k is not None:
@@ -86,9 +76,7 @@ class AttentionDecoder(nn.Module):
         q = q * scaling
 
         if attn_mask is not None:
-            assert (
-                attn_mask.dtype == torch.bool
-            ), "Only bool types are supported for attn_mask, not {}".format(
+            assert attn_mask.dtype == torch.bool, "Only bool types are supported for attn_mask, not {}".format(
                 attn_mask.dtype
             )
             if attn_mask.dim() == 2:
@@ -104,13 +92,9 @@ class AttentionDecoder(nn.Module):
                     if attn_mask.size(0) == bsz:
                         attn_mask = attn_mask.repeat_interleave(num_heads, 0)
                     else:
-                        raise RuntimeError(
-                            "The size of the 3D attn_mask is not correct."
-                        )
+                        raise RuntimeError("The size of the 3D attn_mask is not correct.")
             else:
-                raise RuntimeError(
-                    "attn_mask's dimension {} is not supported".format(attn_mask.dim())
-                )
+                raise RuntimeError("attn_mask's dimension {} is not supported".format(attn_mask.dim()))
 
         q = q.contiguous().view(tgt_len, bsz * num_heads, head_dim).transpose(0, 1)
         k = k.contiguous().view(-1, bsz * num_heads, head_dim).transpose(0, 1)
@@ -126,9 +110,7 @@ class AttentionDecoder(nn.Module):
                 attn_output_weights.masked_fill_(attn_mask, float("-inf"))
 
         log_prob = F.log_softmax(attn_output_weights, dim=-1)
-        log_prob = (
-            log_prob.view(bsz, num_heads, tgt_len, src_len).sum(dim=1) / num_heads
-        )
+        log_prob = log_prob.view(bsz, num_heads, tgt_len, src_len).sum(dim=1) / num_heads
 
         return log_prob.squeeze(1)
 

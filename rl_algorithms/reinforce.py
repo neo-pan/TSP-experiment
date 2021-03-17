@@ -6,6 +6,7 @@ from environments import TSPEnv
 from torch_geometric.data import Batch, Data
 from torch_geometric.utils import to_dense_batch
 
+
 def clip_grad_norms(param_groups, max_norm=math.inf):
     """
     Clips the norms for all param groups to max_norm and returns gradient norms before clipping
@@ -16,14 +17,15 @@ def clip_grad_norms(param_groups, max_norm=math.inf):
     """
     grad_norms = [
         torch.nn.utils.clip_grad_norm_(
-            group['params'],
+            group["params"],
             max_norm if max_norm > 0 else math.inf,  # Inf so no clipping but still call to calc
-            norm_type=2
+            norm_type=2,
         )
         for group in param_groups
     ]
     grad_norms_clipped = [min(g_norm, max_norm) for g_norm in grad_norms] if max_norm > 0 else grad_norms
     return grad_norms, grad_norms_clipped
+
 
 def reinforce_train_batch(
     model: nn.Module,
@@ -33,7 +35,7 @@ def reinforce_train_batch(
     epoch: int,
     batch_id: int,
     step: int,
-    env,
+    env: TSPEnv,
     logger,
     args,
 ) -> None:
@@ -44,9 +46,10 @@ def reinforce_train_batch(
     reward_s = []
     done = False
     state = env.reset(node_pos)
-    model.encode(batch)
+    embed_data = model.init_embed(batch)
+    dense_x, graph_feat = model.encoder.encode(embed_data)
     while not done:
-        action, log_p = model(state)
+        action, log_p = model(state, dense_x, graph_feat)
         state, reward, done, _ = env.step(action)
         log_p_s.append(log_p)
         action_s.append(action)
@@ -79,6 +82,7 @@ def reinforce_train_batch(
             log_likelihood=log_likelihood,
             reinforce_loss=rl_loss,
             bl_loss=bl_loss,
+            log_p=log_p,
             logger=logger,
         )
 
@@ -87,17 +91,13 @@ def _calc_log_likelihood(_log_p, a):
     # Get log_p corresponding to selected actions
     log_p = _log_p.gather(2, a).squeeze(-1)
 
-    assert (
-        log_p > -1000
-    ).data.all(), "Logprobs should not be -inf, check sampling procedure!"
+    assert (log_p > -1000).data.all(), "Logprobs should not be -inf, check sampling procedure!"
 
     # Calculate log_likelihood
     return log_p.sum(1)
 
 
-def log_values(
-    cost, grad_norms, bl_val, epoch, batch_id, step, log_likelihood, reinforce_loss, bl_loss, logger
-):
+def log_values(cost, grad_norms, bl_val, epoch, batch_id, step, log_likelihood, reinforce_loss, bl_loss, log_p, logger):
     avg_cost = cost.mean().item()
     bl_cost = bl_val.mean().item()
     grad_norms, grad_norms_clipped = grad_norms
@@ -107,15 +107,17 @@ def log_values(
         "epoch: {}, train_batch_id: {}, avg_cost: {}, baseline predict: {}".format(epoch, batch_id, avg_cost, bl_cost)
     )
 
-    print('grad_norm: {}, clipped: {}'.format(grad_norms, grad_norms_clipped))
+    print("grad_norm: {}, clipped: {}".format(grad_norms, grad_norms_clipped))
 
     # Log values to tensorboard
     logger.add_scalar("avg_cost", avg_cost, step)
 
-    logger.add_scalar('grad_norm', grad_norms[0], step)
-    logger.add_scalar('grad_norm_clipped', grad_norms_clipped[0], step)
+    logger.add_scalar("grad_norm", grad_norms[0], step)
+    logger.add_scalar("grad_norm_clipped", grad_norms_clipped[0], step)
 
     logger.add_scalar("actor_loss", reinforce_loss.item(), step)
     logger.add_scalar("nll", -log_likelihood.mean().item(), step)
 
     logger.add_scalar("critic_loss", bl_loss.item(), step)
+    if not batch_id % 10:
+        logger.add_histogram("first_step_prob", log_p.cpu()[0][0].exp().squeeze(), step)

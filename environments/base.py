@@ -16,3 +16,6 @@ class _BaseEnv(object):
 
     def reset(self):
         raise NotImplementedError
+
+    def done(self):
+        raise NotImplementedError

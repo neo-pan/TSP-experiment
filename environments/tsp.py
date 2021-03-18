@@ -5,7 +5,6 @@ from typing import Tuple
 
 import torch
 import numpy as np
-from scipy.spatial.distance import cdist
 from typing import NamedTuple
 
 from .base import _BaseEnv

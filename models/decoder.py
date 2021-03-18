@@ -1,6 +1,4 @@
-#!/usr/bin/env python
-# coding=utf-8
-
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -16,24 +14,21 @@ class AttentionDecoder(nn.Module):
         bias
     """
 
-    def __init__(
-        self, query_dim: int, embed_dim: int, num_heads: int = 1, bias: bool = True, tanh_clipping: int = 10.0,
-    ) -> None:
+    def __init__(self, embed_dim: int, num_heads: int = 1, bias: bool = True, tanh_clipping: int = 10.0,) -> None:
         super().__init__()
-        self.query_dim = query_dim
         self.embed_dim = embed_dim
         self.num_heads = num_heads
         self.bias = bias
         self.tanh_clipping = tanh_clipping
         self._precompute = False
-        self.query_proj = nn.Linear(self.query_dim, self.embed_dim, bias=self.bias)
-        self.key_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=self.bias)
+        self.glimpse_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=self.bias)
 
     def forward(
         self,
         query: torch.Tensor,
-        key: torch.Tensor = None,
-        precomputed_k: torch.Tensor = None,
+        glimpse_K: torch.Tensor,
+        glimpse_V: torch.Tensor,
+        logit_K: torch.Tensor,
         attn_mask: torch.Tensor = None,
     ) -> torch.Tensor:
         r"""
@@ -41,8 +36,10 @@ class AttentionDecoder(nn.Module):
             Inputs:
             - query: :math:`(L, N, E)` where L is the target sequence length, N is the batch size, E is
             the embedding dimension.
-            - key: :math:`(S, N, E)`, where S is the source sequence length, N is the batch size, E is
+            - glimpse_K: :math:`(S, N, E)`, where S is the source sequence length, N is the batch size, E is
             the embedding dimension.
+            - glimpse_V: :math:`(S, N, E)`
+            - logit_K: :math:`(N, S, E)`
             - attn_mask: 2D mask :math:`(L, S)` where L is the target sequence length, S is the source sequence length.
             3D mask :math:`(N*num_heads, L, S)` where N is the batch size, L is the target sequence length,
             S is the source sequence length. attn_mask ensures that position i is allowed to attend the unmasked
@@ -56,65 +53,58 @@ class AttentionDecoder(nn.Module):
             L is the target sequence length, S is the source sequence length.
         """
         num_heads = self.num_heads
-        tgt_len, bsz, query_dim = query.size()
-        assert query_dim == self.query_dim
-        assert precomputed_k is not None or key is not None, f"Keys need to be input or precompute"
-        if key is None:
-            src_len, _, embed_dim = precomputed_k.size()
-        else:
-            src_len, _, embed_dim = key.size()
-        head_dim = embed_dim // num_heads
-        scaling = float(head_dim) ** -0.5
+        tgt_len, bsz, embed_dim = query.size()
         assert embed_dim == self.embed_dim
+        src_len, _, embed_dim = glimpse_K.size()
+        assert embed_dim == self.embed_dim
+        assert list(glimpse_K.size()) == list(glimpse_V.size())
+        assert list(logit_K.size()) == [bsz, src_len, embed_dim], f"{logit_K.size()} - {[bsz, src_len, embed_dim]}"
+        head_dim = embed_dim // num_heads
         assert head_dim * num_heads == embed_dim, "embed_dim must be divisible by num_heads"
-
-        q = self.query_proj(query)
-        if precomputed_k is not None:
-            k = precomputed_k
-        else:
-            k = self.key_proj(key)
-        q = q * scaling
 
         if attn_mask is not None:
             assert attn_mask.dtype == torch.bool, "Only bool types are supported for attn_mask, not {}".format(
                 attn_mask.dtype
             )
-            if attn_mask.dim() == 2:
-                attn_mask = attn_mask.unsqueeze(0)
-                if list(attn_mask.size()) != [1, tgt_len, src_len]:
-                    raise RuntimeError("The size of the 2D attn_mask is not correct.")
-            elif attn_mask.dim() == 3:
-                if list(attn_mask.size()) != [
-                    bsz * num_heads,
-                    tgt_len,
-                    src_len,
-                ]:
-                    if attn_mask.size(0) == bsz:
-                        attn_mask = attn_mask.repeat_interleave(num_heads, 0)
-                    else:
-                        raise RuntimeError("The size of the 3D attn_mask is not correct.")
+            assert attn_mask.dim() == 3, "attn_mask's dimension {} is not supported".format(attn_mask.dim())
+            if list(attn_mask.size()) == [
+                bsz,
+                tgt_len,
+                src_len,
+            ]:
+                heads_mask = attn_mask.expand(num_heads, *attn_mask.size())
             else:
-                raise RuntimeError("attn_mask's dimension {} is not supported".format(attn_mask.dim()))
+                raise RuntimeError("The size of the 3D attn_mask is not correct.")
 
-        q = q.contiguous().view(tgt_len, bsz * num_heads, head_dim).transpose(0, 1)
-        k = k.contiguous().view(-1, bsz * num_heads, head_dim).transpose(0, 1)
+        # (n_heads, batch_size, target_len, head_dim)
+        glimpse_Q = query.view(tgt_len, bsz, num_heads, head_dim).permute(2, 1, 0, 3)
+        # (n_heads, batch_size, source_len, head_dim)
+        glimpse_K = glimpse_K.view(src_len, bsz, num_heads, head_dim).permute(2, 1, 0, 3)
+        glimpse_V = glimpse_V.view(src_len, bsz, num_heads, head_dim).permute(2, 1, 0, 3)
 
-        attn_output_weights = torch.bmm(q, k.transpose(1, 2))
-        assert list(attn_output_weights.size()) == [bsz * num_heads, tgt_len, src_len]
-
-        if self.tanh_clipping > 0:
-            attn_output_weights = torch.tanh(attn_output_weights) * self.tanh_clipping
+        compatibility = torch.matmul(glimpse_Q, glimpse_K.transpose(-1, -2)) / math.sqrt(glimpse_Q.size(-1))
+        assert list(compatibility.size()) == [num_heads, bsz, tgt_len, src_len]
 
         if attn_mask is not None:
-            if attn_mask.dtype == torch.bool:
-                attn_output_weights.masked_fill_(attn_mask, float("-inf"))
+            assert attn_mask.dtype == torch.bool
+            compatibility.masked_fill_(heads_mask, float("-inf"))
 
-        log_prob = F.log_softmax(attn_output_weights, dim=-1)
-        log_prob = log_prob.view(bsz, num_heads, tgt_len, src_len).sum(dim=1) / num_heads
+        heads = torch.matmul(torch.softmax(compatibility, dim=-1), glimpse_V)
+        assert list(heads.size()) == [num_heads, bsz, tgt_len, head_dim]
+
+        glimpse = self.glimpse_proj(heads.permute(1, 2, 0, 3).contiguous().view(bsz, tgt_len, embed_dim))
+
+        final_Q = glimpse
+        assert list(final_Q.size()) == [bsz, tgt_len, embed_dim]
+        logits = torch.matmul(final_Q, logit_K.transpose(-2, -1)) / math.sqrt(final_Q.size(-1))
+        assert list(logits.size()) == [bsz, tgt_len, src_len]
+
+        if self.tanh_clipping > 0:
+            logits = torch.tanh(logits) * self.tanh_clipping
+        if attn_mask is not None:
+            assert attn_mask.dtype == torch.bool
+            logits.masked_fill_(attn_mask, float("-inf"))
+
+        log_prob = F.log_softmax(logits, dim=-1)
 
         return log_prob.squeeze(1)
-
-    def precompute_keys(self, key: torch.Tensor) -> None:
-        assert key.size(-1) == self.embed_dim
-        precomputed_k = self.key_proj(key)
-        return precomputed_k

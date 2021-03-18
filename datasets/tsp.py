@@ -43,9 +43,6 @@ def gen_fully_connected_graph(node_num: int, pos_feature: bool = True) -> Data:
     col = torch.reshape(torch.t(index), [-1])
     edge_index = torch.stack([rol, col], dim=0)
     pos = torch.empty(size=(node_num, 2)).uniform_(0, 1)
-    # TEST #
-    # pos[0].zero_()
-    ########
     node_feat = torch.tensor([[0, 1] if i == 0 else [1, 0] for i in range(node_num)], dtype=torch.float,)
 
     graph = Data(x=torch.cat([node_feat, pos], dim=-1), edge_index=edge_index, pos=pos)

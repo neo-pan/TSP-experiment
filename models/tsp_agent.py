@@ -4,9 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from typing import Any, Tuple
-from torch_geometric.nn import global_add_pool, global_max_pool, global_mean_pool
 from torch_geometric.data import Data, Batch
-from torch_geometric.utils.to_dense_batch import to_dense_batch
 from .encoder import cal_size_list, MLP, GNNEncoder
 from .decoder import AttentionDecoder
 
@@ -39,9 +37,10 @@ class TSPAgent(nn.Module):
 
         self.graph_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=False)
         self.step_proj = nn.Linear(self.embed_dim * 2, self.embed_dim, bias=False)
+        self.project_node_embeddings = nn.Linear(self.embed_dim, 3 * self.embed_dim, bias=False)
 
         self.decoder = AttentionDecoder(
-            self.embed_dim, self.embed_dim, self.decoder_num_heads, bias=False, tanh_clipping=self.tanh_clipping
+            self.embed_dim, self.decoder_num_heads, bias=False, tanh_clipping=self.tanh_clipping
         )
 
         self.W_placeholder = nn.Parameter(torch.Tensor(2 * self.embed_dim))
@@ -76,9 +75,11 @@ class TSPAgent(nn.Module):
         # Transform node features for attention compute
         query = self._make_query(state, dense_x, graph_feat)
         mask = state.avail_mask
-        key = dense_x.permute(1, 0, 2)
+        glimpse_K, glimpse_V, logit_K = self.project_node_embeddings(dense_x).chunk(3, dim=-1)
+        glimpse_K = glimpse_K.permute(1, 0, 2).contiguous() # (num_nodes, batch_size, embed_dim)
+        glimpse_V = glimpse_V.permute(1, 0, 2).contiguous()
 
-        log_p = self.decoder(query, key, attn_mask=~mask.unsqueeze(1))
+        log_p = self.decoder(query, glimpse_K, glimpse_V, logit_K, attn_mask=~mask.unsqueeze(1))
         selected = self._select_node(log_p, mask)
 
         return selected, log_p
@@ -103,7 +104,7 @@ class TSPAgent(nn.Module):
         query = (graph_context + step_context).unsqueeze(0)
         assert list(query.shape) == [1, batch_size, embed_dim], query.shape
 
-        return query
+        return query.contiguous()
 
     def _select_node(self, log_p: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         assert log_p.shape == mask.shape, f"{log_p.shape}, {mask.shape}"

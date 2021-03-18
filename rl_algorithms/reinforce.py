@@ -5,6 +5,7 @@ import torch.optim as optim
 from environments import TSPEnv
 from torch_geometric.data import Batch, Data
 from torch_geometric.utils import to_dense_batch
+from torch.utils.tensorboard.writer import SummaryWriter
 
 
 def clip_grad_norms(param_groups, max_norm=math.inf):
@@ -97,7 +98,7 @@ def _calc_log_likelihood(_log_p, a):
     return log_p.sum(1)
 
 
-def log_values(cost, grad_norms, bl_val, epoch, batch_id, step, log_likelihood, reinforce_loss, bl_loss, log_p, logger):
+def log_values(cost, grad_norms, bl_val, epoch, batch_id, step, log_likelihood, reinforce_loss, bl_loss, log_p, logger: SummaryWriter):
     avg_cost = cost.mean().item()
     bl_cost = bl_val.mean().item()
     grad_norms, grad_norms_clipped = grad_norms
@@ -119,7 +120,8 @@ def log_values(cost, grad_norms, bl_val, epoch, batch_id, step, log_likelihood, 
     logger.add_scalar("nll", -log_likelihood.mean().item(), step)
 
     logger.add_scalar("critic_loss", bl_loss.item(), step)
-    if not batch_id % 10:
+    if not batch_id % 100:
         num_step, num_graph, num_node = log_p.shape
         logger.add_histogram("first_step_prob", log_p.cpu()[0][0].exp().squeeze(), step)
-        logger.add_histogram("mid_prob", log_p.cpu()[num_step//2][0].exp().squeeze(), step)
+        logger.add_histogram("mid_step_prob", log_p.cpu()[num_step//2][0].exp().squeeze(), step)
+        logger.add_histogram("last_step_prob", log_p.cpu()[-1][0].exp().squeeze(), step)

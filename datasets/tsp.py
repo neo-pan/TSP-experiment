@@ -6,6 +6,7 @@ import os.path as osp
 
 import networkx as nx
 import torch
+from torch_geometric import data
 from torch_geometric.data import Data, InMemoryDataset
 from torch_geometric.data.dataset import __repr__, files_exist
 from torch_geometric.nn import knn_graph
@@ -46,6 +47,7 @@ def gen_fully_connected_graph(node_num: int, pos_feature: bool = True) -> Data:
     node_feat = torch.tensor([[0, 1] if i == 0 else [1, 0] for i in range(node_num)], dtype=torch.float,)
 
     graph = Data(x=torch.cat([node_feat, pos], dim=-1), edge_index=edge_index, pos=pos)
+    graph = Distance(norm=False, cat=False)(graph)
 
     return graph
 
@@ -87,6 +89,8 @@ class TSPDataset(InMemoryDataset):
     def get_data_list(self):
         if self.load_path:
             data_list = torch.load(self.load_path)
+            assert len(data_list)>=self.size
+            data_list = data_list[0:self.size]
         else:
             data_list = [self._create(idx) for idx in range(self.size)]
         return data_list

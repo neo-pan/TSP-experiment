@@ -1,4 +1,4 @@
-from typing import Tuple
+from typing import Callable, Tuple
 
 import numpy as np
 import torch
@@ -13,7 +13,7 @@ from torch_geometric.nn import global_add_pool, global_max_pool, global_mean_poo
 from torch_geometric.utils import to_dense_batch
 
 
-def get_pooling_func(pooling_method: str):
+def get_pooling_func(pooling_method: str) -> Callable[[torch.Tensor, torch.Tensor], torch.Tensor]:
     pooling_funcs = {
         "add": global_add_pool,
         "max": global_max_pool,
@@ -23,13 +23,13 @@ def get_pooling_func(pooling_method: str):
     return pooling_funcs[pooling_method]
 
 
-def get_normalization_class(normalization: str):
+def get_normalization_class(normalization: str) -> nn.Module:
     norm_class = {"batch": BatchNorm, "instance": InstanceNorm}
     assert normalization in norm_class.keys(), f"Wrong normalization methon: {normalization}"
     return norm_class[normalization]
 
 
-def get_gnn_layer_class(gnn_layer: str):
+def get_gnn_layer_class(gnn_layer: str) -> nn.Module:
     gnn = {"gat": _GATConv, "transformer": _TransformerConv}
     assert gnn_layer in gnn.keys(), f"Wrong GNN layer class: {gnn_layer}"
     return gnn[gnn_layer]
@@ -99,10 +99,13 @@ class GNNEncoder(nn.Module):
         ff_list = []
         for _ in range(self.num_layers):
             gnn_layer = _TransformerConv(
-                in_channels=self.embed_dim, out_channels=self.embed_dim // self.heads, heads=self.heads,
+                in_channels=self.embed_dim,
+                out_channels=self.embed_dim // self.heads,
+                heads=self.heads,
+                edge_dim=self.embed_dim,
             )
             gnn_layer_list.append(gnn_layer)
-            norm = self.norm_class(self.embed_dim)
+            norm = self.norm_class(in_channels=self.embed_dim)
             norm_list.append(norm)
             feed_forward = nn.Sequential(
                 nn.Linear(self.embed_dim, feed_forward_hidden),
@@ -116,18 +119,7 @@ class GNNEncoder(nn.Module):
         self.norm_list = nn.ModuleList(norm_list)
         self.ff_list = nn.ModuleList(ff_list)
 
-    def forward(self, x: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
-
-        for gnn_layer, norm, ff in zip(self.gnn_layer_list, self.norm_list, self.ff_list):
-            # identity = x
-            x = gnn_layer(x, edge_index)
-            x = norm(x)
-            x = ff(x)
-            # x += identity
-
-        return x
-
-    def encode(self, data: Batch) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, data: Batch) -> Tuple[torch.Tensor, torch.Tensor]:
         """Encode graph input features.
         
         Get node_embedding, graph_embedding.
@@ -137,17 +129,22 @@ class GNNEncoder(nn.Module):
             data: a torch_geometric batch of graphs
 
         Returns:
-            dense_x: encoded graph node features, shape->[batch_size, node_num, embed_dim]
+            node_embeddings: encodded graph node features, shape->[batch_size, node_num, embed_dim]
             graph_feat: graph features produced by pooling function, shape->[batch_size, embed_dim]
         """
         x = data.x
         edge_index = data.edge_index
+        edge_attr = data.edge_attr
 
-        x = self(x, edge_index)
-        dense_x, dense_mask = to_dense_batch(x, data.batch)
+        for gnn_layer, norm, ff in zip(self.gnn_layer_list, self.norm_list, self.ff_list):
+            x = gnn_layer(x, edge_index, edge_attr)
+            x = norm(x)
+            x = ff(x)
+
+        node_embeddings, dense_mask = to_dense_batch(x, data.batch)
         assert dense_mask.all(), "For now only support a batch of graphs with the same number of nodes"
 
         # Pooling graph features
         graph_feat = self.pooling_func(x, data.batch)
 
-        return dense_x, graph_feat
+        return (node_embeddings, graph_feat)

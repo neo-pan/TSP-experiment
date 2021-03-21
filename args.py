@@ -38,12 +38,12 @@ def get_args(args):
 
 
     # Model
-    parser.add_argument("--input_dim", type=int, default=4)
+    parser.add_argument("--node_dim", type=int, default=2)
+    parser.add_argument("--edge_dim", type=int, default=1)
     parser.add_argument("--embed_dim", type=int, default=128)
-    parser.add_argument("--num_embed_layers", type=int, default=2)
     parser.add_argument("--num_gnn_layers", type=int, default=3)
     parser.add_argument("--encoder_num_heads", type=int, default=8)
-    parser.add_argument("--decoder_num_heads", type=int, default=1)
+    parser.add_argument("--decoder_num_heads", type=int, default=8)
     parser.add_argument("--bias", type=bool, default=True)
     parser.add_argument("--tanh_clipping", type=float, default=10.0)
     parser.add_argument("--pooling_method", type=str, default="mean")

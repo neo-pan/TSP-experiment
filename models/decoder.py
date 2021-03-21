@@ -20,7 +20,6 @@ class AttentionDecoder(nn.Module):
         self.num_heads = num_heads
         self.bias = bias
         self.tanh_clipping = tanh_clipping
-        self._precompute = False
         self.glimpse_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=self.bias)
 
     def forward(
@@ -82,12 +81,12 @@ class AttentionDecoder(nn.Module):
         glimpse_K = glimpse_K.view(src_len, bsz, num_heads, head_dim).permute(2, 1, 0, 3)
         glimpse_V = glimpse_V.view(src_len, bsz, num_heads, head_dim).permute(2, 1, 0, 3)
 
-        compatibility = torch.matmul(glimpse_Q, glimpse_K.transpose(-1, -2)) / math.sqrt(glimpse_Q.size(-1))
+        compatibility = torch.matmul(glimpse_Q, glimpse_K.transpose(-2, -1)) / math.sqrt(glimpse_Q.size(-1))
         assert list(compatibility.size()) == [num_heads, bsz, tgt_len, src_len]
 
         if attn_mask is not None:
             assert attn_mask.dtype == torch.bool
-            compatibility.masked_fill_(heads_mask, float("-inf"))
+            compatibility.masked_fill_(heads_mask, -math.inf)
 
         heads = torch.matmul(torch.softmax(compatibility, dim=-1), glimpse_V)
         assert list(heads.size()) == [num_heads, bsz, tgt_len, head_dim]
@@ -103,8 +102,9 @@ class AttentionDecoder(nn.Module):
             logits = torch.tanh(logits) * self.tanh_clipping
         if attn_mask is not None:
             assert attn_mask.dtype == torch.bool
-            logits.masked_fill_(attn_mask, float("-inf"))
+            logits.masked_fill_(attn_mask, -math.inf)
 
         log_prob = F.log_softmax(logits, dim=-1)
+        assert not torch.isnan(log_prob).any()
 
         return log_prob.squeeze(1)

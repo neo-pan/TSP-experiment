@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from environments import TSPEnv
+from pprint import pprint
 from torch_geometric.data import Batch, Data
 from torch_geometric.utils import to_dense_batch
 from torch.utils.tensorboard.writer import SummaryWriter
@@ -48,9 +49,10 @@ def reinforce_train_batch(
     done = False
     state = env.reset(node_pos)
     embed_data = model.init_embed(batch)
-    dense_x, graph_feat = model.encoder.encode(embed_data)
+    node_embeddings, graph_feat = model.encoder(embed_data)
+    fixed = model.precompute_fixed(node_embeddings, graph_feat)
     while not done:
-        action, log_p = model(state, dense_x, graph_feat)
+        action, log_p = model(state, fixed)
         state, reward, done, _ = env.step(action)
         log_p_s.append(log_p)
         action_s.append(action)
@@ -60,9 +62,9 @@ def reinforce_train_batch(
     # Calculate policy's log_likelihood and reward
     log_likelihood = _calc_log_likelihood(log_p, a)
     # reward is a negative value of tour lenth
-    cost = -(reward_s[-1].unsqueeze(-1))
     # let baseline to predict positive value
-    bl_val, bl_loss = baseline.eval(batch, cost)
+    cost = -(reward_s[-1])
+    bl_val, bl_loss = baseline.evaluate(batch, cost)
     rl_loss = ((cost - bl_val) * log_likelihood).mean()
     loss = rl_loss + bl_loss
 
@@ -85,6 +87,7 @@ def reinforce_train_batch(
             bl_loss=bl_loss,
             log_p=log_p,
             logger=logger,
+            args=args,
         )
 
 
@@ -98,7 +101,20 @@ def _calc_log_likelihood(_log_p, a):
     return log_p.sum(1)
 
 
-def log_values(cost, grad_norms, bl_val, epoch, batch_id, step, log_likelihood, reinforce_loss, bl_loss, log_p, logger: SummaryWriter):
+def log_values(
+    cost,
+    grad_norms,
+    bl_val,
+    epoch,
+    batch_id,
+    step,
+    log_likelihood,
+    reinforce_loss,
+    bl_loss,
+    log_p,
+    logger: SummaryWriter,
+    args,
+):
     avg_cost = cost.mean().item()
     bl_cost = bl_val.mean().item()
     grad_norms, grad_norms_clipped = grad_norms
@@ -118,10 +134,10 @@ def log_values(cost, grad_norms, bl_val, epoch, batch_id, step, log_likelihood, 
 
     logger.add_scalar("actor_loss", reinforce_loss.item(), step)
     logger.add_scalar("nll", -log_likelihood.mean().item(), step)
-
-    logger.add_scalar("critic_loss", bl_loss.item(), step)
+    # if args.baseline == "critic":
+    #     logger.add_scalar("critic_loss", bl_loss.item(), step)
     if not batch_id % 100:
-        num_step, num_graph, num_node = log_p.shape
+        num_graph, num_step, num_node = log_p.shape
         logger.add_histogram("first_step_prob", log_p.cpu()[0][0].exp().squeeze(), step)
-        logger.add_histogram("mid_step_prob", log_p.cpu()[num_step//2][0].exp().squeeze(), step)
-        logger.add_histogram("last_step_prob", log_p.cpu()[-1][0].exp().squeeze(), step)
+        logger.add_histogram("mid_step_prob", log_p.cpu()[0][num_step // 2].exp().squeeze(), step)
+        logger.add_histogram("last_step_prob", log_p.cpu()[0][-1].exp().squeeze(), step)

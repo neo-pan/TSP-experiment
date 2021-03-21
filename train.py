@@ -64,9 +64,10 @@ def rollout(model, dataset, env, args):
         done = False
         state = env.reset(node_pos)
         embed_data = model.init_embed(bat)
-        dense_x, graph_feat = model.encoder.encode(embed_data)
+        node_embeddings, graph_feat = model.encoder(embed_data)
+        fixed = model.precompute_fixed(node_embeddings, graph_feat)
         while not done:
-            action, _ = model(state, dense_x, graph_feat)
+            action, _ = model(state, fixed)
             state, reward, done, _ = env.step(action)
             reward_s.append(reward)
         return reward_s[-1].cpu()
@@ -122,7 +123,7 @@ if __name__ == "__main__":
     if args.load_path:
         epoch_resume = int(os.path.splitext(os.path.split(args.load_path)[-1])[0].split("-")[1])
         args.epoch_start = epoch_resume + 1
-    val_dataset = TSPDataset(size=args.val_size, args=args)
+    val_dataset = TSPDataset(size=args.val_size, args=args, load_path=args.val_dataset)
 
     if args.eval_only:
         validate(model, val_dataset, env, args)

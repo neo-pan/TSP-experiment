@@ -32,12 +32,12 @@ class TSPEnv(_BaseEnv):
         self._step_count += 1
         self._act_list.append(action)
         self._avail_mask[self._batch_idx, action.squeeze()] = False
-        
+
         # If not first step, update tour_len
         if self._step_count > 1:
             last_act = self._act_list[-2]
             self.tour_len += self._distance_matrix[self._batch_idx, last_act.squeeze(), action.squeeze()]
-        
+
         # If last step, complete tour_len, mask `done` as true
         if self._step_count == (self.num_nodes):
             done = True
@@ -46,16 +46,11 @@ class TSPEnv(_BaseEnv):
             raise ValueError
         else:
             done = False
-        
 
         reward = -self.tour_len if done else torch.zeros(self.batch_size)
 
         return (
-            TSPState(
-                first_node=self._act_list[0],
-                pre_node=action,
-                avail_mask=self._avail_mask.clone(),
-            ),
+            TSPState(first_node=self._act_list[0], pre_node=action, avail_mask=self._avail_mask.clone(),),
             reward,
             done,
             {},
@@ -90,11 +85,7 @@ class TSPEnv(_BaseEnv):
         self._act_list = []
         self.tour_len = torch.zeros((self.batch_size), dtype=torch.float, device=self.device)
 
-        return TSPState(
-            first_node=None,
-            pre_node=None,
-            avail_mask=self._avail_mask.clone(),
-        )
+        return TSPState(first_node=None, pre_node=None, avail_mask=self._avail_mask.clone(),)
 
     def __repr__(self) -> str:
         return f"TSP Environment, with {self.batch_size} graphs of size {self.num_nodes}"

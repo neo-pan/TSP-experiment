@@ -11,7 +11,7 @@ from .encoder import cal_size_list, MLP, GNNEncoder
 
 
 class Baseline(object):
-    def eval(self, x, c):
+    def evaluate(self, x, c):
         raise NotImplementedError("Override this method")
 
     def epoch_callback(self, model, epoch):
@@ -50,7 +50,7 @@ class CriticBaseline(nn.Module, Baseline):
 
         return out
 
-    def eval(self, data: Batch, target: torch.Tensor) -> torch.Tensor:
+    def evaluate(self, data: Batch, target: torch.Tensor) -> torch.Tensor:
 
         out = self.forward(data)
 
@@ -66,7 +66,7 @@ class ExponentialBaseline(Baseline):
         self.beta = args.exp_beta
         self.v = None
 
-    def eval(self, data: Batch, target: torch.Tensor) -> torch.Tensor:
+    def evaluate(self, data: Batch, target: torch.Tensor) -> torch.Tensor:
 
         if self.v is None:
             v = target.mean()
@@ -74,7 +74,7 @@ class ExponentialBaseline(Baseline):
             v = self.beta * self.v + (1.0 - self.beta) * target.mean()
 
         self.v = v.detach()  # Detach since we never want to backprop
-        return self.v, torch.tensor(0, dtype=torch.float, requires_grad=True)  # No loss
+        return self.v, 0  # No loss
 
     def state_dict(self):
         return {"v": self.v}

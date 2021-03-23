@@ -4,6 +4,8 @@ import time
 
 import torch
 
+def largest_power_of_two(n):
+     return 1 << (n.bit_length() - 1)
 
 def get_args(args):
     parser = argparse.ArgumentParser(
@@ -17,7 +19,7 @@ def get_args(args):
         "--graph_type",
         type=str,
         default="knn",
-        choices=["fully_connected", "knn"],
+        choices=["complete", "knn"],
         help="Graph type to use during training.",
     )
     parser.add_argument(
@@ -34,6 +36,9 @@ def get_args(args):
     )
     parser.add_argument(
         "--train_dataset", type=str, default=None, help="Dataset file to use for training",
+    )
+    parser.add_argument(
+        "--num_workers", type=int, default=8, help="Numbers of CPUs used for generating dataset"
     )
 
 
@@ -98,6 +103,7 @@ def get_args(args):
 
     args = parser.parse_args(args)
     args.use_cuda = torch.cuda.is_available() if not args.no_cuda else False
+    args.num_workers = min(args.num_workers, largest_power_of_two(os.cpu_count()))
 
     args.run_name = "{}_{}".format(args.run_name, time.strftime("%Y%m%dT%H%M%S"))
     args.save_dir = os.path.join(args.output_dir, "{}_{}".format(args.problem, args.graph_size), args.run_name)

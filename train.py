@@ -136,7 +136,7 @@ if __name__ == "__main__":
             start_time = time.time()
             tb_logger.add_scalar("learnrate_pg0", optimizer.param_groups[0]["lr"], step)
             training_dataset = TSPDataset(size=args.epoch_size, args=args, load_path=args.train_dataset)
-            training_dataloader = DataLoader(training_dataset, batch_size=args.batch_size)
+            training_dataloader = DataLoader(training_dataset, batch_size=args.batch_size, num_workers=args.num_workers)
 
             if args.warmup_epochs > 0 and epoch < args.warmup_epochs:
                 warmup_baseline(baseline, training_dataset, env, optimizer, args)

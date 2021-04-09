@@ -26,10 +26,10 @@ def get_args(args):
         "--batch_size", type=int, default=512, help="Number of instances per batch during training",
     )
     parser.add_argument(
-        "--epoch_size", type=int, default=128000, help="Number of instances per epoch during training",
+        "--epoch_size", type=int, default=5120, help="Number of instances per epoch during training",
     )
     parser.add_argument(
-        "--val_size", type=int, default=100, help="Number of instances used for reporting validation performance",
+        "--val_size", type=int, default=256, help="Number of instances used for reporting validation performance",
     )
     parser.add_argument(
         "--val_dataset", type=str, default=None, help="Dataset file to use for validation",
@@ -47,17 +47,21 @@ def get_args(args):
     parser.add_argument("--edge_dim", type=int, default=1)
     parser.add_argument("--embed_dim", type=int, default=128)
     parser.add_argument("--num_gnn_layers", type=int, default=3)
+    parser.add_argument("--tour_gnn_layers", type=int, default=5)
     parser.add_argument("--encoder_num_heads", type=int, default=8)
     parser.add_argument("--decoder_num_heads", type=int, default=8)
     parser.add_argument("--bias", type=bool, default=True)
     parser.add_argument("--tanh_clipping", type=float, default=10.0)
     parser.add_argument("--pooling_method", type=str, default="mean")
+    parser.add_argument("--tour_pooling_method", type=str, default="add")
     parser.add_argument("--decode_type", type=str, default="sampling")
     parser.add_argument(
         "--normalization", default="batch", help="Normalization type, 'batch' (default) or 'instance'",
     )
 
     # Training
+    parser.add_argument("--max_num_steps", type=int, default=200, help="Max number of steps of TSP2OPTEnv")
+    parser.add_argument("--horizon", type=int, default=10, help="Horizon length of RL agent to compute rewards and update")
     parser.add_argument(
         "--eval_batch_size", type=int, default=1024, help="Number of instances per batch during evaluating",
     )
@@ -79,10 +83,13 @@ def get_args(args):
     parser.add_argument(
         "--exp_beta", type=float, default=0.8, help="Exponential moving average baseline decay (default 0.8)",
     )
+    parser.add_argument("--gamma", type=float, default=0.99, help="RL rewards decay")
+    parser.add_argument("--value_beta", type=float, default=0.5, help="Value loss weight")
+    parser.add_argument("--entropy_beta", type=float, default=0.005, help="Entropy loss weight")
 
     # Misc
     parser.add_argument("--no_progress_bar", action="store_true", help="Disable tqdm")
-    parser.add_argument("--log_step", type=int, default=5, help="Log info every log_step steps")
+    parser.add_argument("--log_step", type=int, default=10, help="Log info every log_step steps")
     parser.add_argument(
         "--log_dir", default="logs", help="Directory to write TensorBoard information to",
     )

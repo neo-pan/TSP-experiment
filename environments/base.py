@@ -1,7 +1,3 @@
-#!/usr/bin/env python
-# coding=utf-8
-
-
 class _BaseEnv(object):
 
     reward_range = (-float("inf"), float("inf"))

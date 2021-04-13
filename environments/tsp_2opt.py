@@ -44,6 +44,7 @@ class TSP2OPTEnv(_BaseEnv):
 
         best_updated = False
         if new_best_mask.any():
+            reward[new_best_mask] = reward[new_best_mask].clamp(min=1.0)
             self.best_tour[new_best_mask] = self.curr_tour[new_best_mask].clone()
             self.best_edge_list[new_best_mask] = self.curr_edge_list[new_best_mask].clone()
             self.best_tour_len[new_best_mask] = self.curr_tour_len[new_best_mask].clone()

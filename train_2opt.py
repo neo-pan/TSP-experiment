@@ -34,20 +34,21 @@ def validate(model, dataset, env, args):
 def rollout(model, dataset, env, args):
     # Put in greedy evaluation mode!
 
-    model.set_decode_type("greedy")
+    # model.set_decode_type("greedy")
     model.eval()
 
     def eval_model_bat(bat):
-        node_pos = to_dense_batch(bat.pos, bat.batch)[0]
-        done = False
-        state = env.reset(T=args.max_num_steps, node_pos=node_pos)
-        embed_data = model.init_embed(bat)
-        node_embeddings, _ = model.encoder(embed_data)
-        while not done:
-            action, _, _ = model(state, node_embeddings, embed_data.batch)
-            state, _, done, _ = env.step(action.squeeze())
+        with torch.no_grad():
+            node_pos = to_dense_batch(bat.pos, bat.batch)[0]
+            done = False
+            state = env.reset(T=args.max_num_steps, node_pos=node_pos)
+            embed_data = model.init_embed(bat)
+            node_embeddings, _ = model.encoder(embed_data)
+            while not done:
+                action, _, _ = model(state, node_embeddings, embed_data.batch)
+                state, _, done, _ = env.step(action.squeeze())
 
-        return state.best_tour_len.cpu()
+            return state.best_tour_len.cpu()
 
     return torch.cat(
         [eval_model_bat(bat.to(args.device)) for bat in DataLoader(dataset, batch_size=args.eval_batch_size)], 0,
@@ -100,7 +101,10 @@ if __name__ == "__main__":
     if args.eval_only:
         validate(model, val_dataset, env, args)
     else:
+        learn_count = 0
         for epoch in range(args.epoch_start, args.epoch_start + args.n_epochs):
+            if epoch == 100:
+                args.horizon = 10
             print(
                 "Start train epoch {}, lr={} for run {}".format(epoch, optimizer.param_groups[0]["lr"], args.run_name)
             )
@@ -113,8 +117,8 @@ if __name__ == "__main__":
             model.train()
             model.set_decode_type(args.decode_type)
             for batch_id, batch in enumerate(tqdm(training_dataloader, disable=args.no_progress_bar)):
-                reinforce_train_batch(
-                    model, optimizer, batch, epoch, batch_id, step, env, tb_logger, args,
+                learn_count = reinforce_train_batch(
+                    model, optimizer, batch, epoch, batch_id, step, learn_count, env, tb_logger, args,
                 )
                 step += 1
 
@@ -134,7 +138,7 @@ if __name__ == "__main__":
                 )
 
             avg_len = validate(model, val_dataset, env, args)
-            tb_logger.add_scalar("val_avg_len", avg_len, step)
+            tb_logger.add_scalar("tour_len_val", avg_len, step)
 
             # lr_scheduler should be called at end of epoch
             lr_scheduler.step()

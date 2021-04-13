@@ -4,8 +4,10 @@ import time
 
 import torch
 
+
 def largest_power_of_two(n):
-     return 1 << (n.bit_length() - 1)
+    return 1 << (n.bit_length() - 1)
+
 
 def get_args(args):
     parser = argparse.ArgumentParser(
@@ -16,11 +18,7 @@ def get_args(args):
     parser.add_argument("--problem", default="tsp", help="The problem to solve, default 'tsp'")
     parser.add_argument("--graph_size", type=int, default=50, help="The size of the problem graph")
     parser.add_argument(
-        "--graph_type",
-        type=str,
-        default="knn",
-        choices=["complete", "knn"],
-        help="Graph type to use during training.",
+        "--graph_type", type=str, default="knn", choices=["complete", "knn"], help="Graph type to use during training.",
     )
     parser.add_argument(
         "--batch_size", type=int, default=512, help="Number of instances per batch during training",
@@ -37,17 +35,14 @@ def get_args(args):
     parser.add_argument(
         "--train_dataset", type=str, default=None, help="Dataset file to use for training",
     )
-    parser.add_argument(
-        "--num_workers", type=int, default=8, help="Numbers of CPUs used for generating dataset"
-    )
-
+    parser.add_argument("--num_workers", type=int, default=8, help="Numbers of CPUs used for generating dataset")
 
     # Model
     parser.add_argument("--node_dim", type=int, default=2)
     parser.add_argument("--edge_dim", type=int, default=1)
     parser.add_argument("--embed_dim", type=int, default=128)
     parser.add_argument("--num_gnn_layers", type=int, default=3)
-    parser.add_argument("--tour_gnn_layers", type=int, default=5)
+    parser.add_argument("--tour_gnn_layers", type=int, default=1)
     parser.add_argument("--encoder_num_heads", type=int, default=8)
     parser.add_argument("--decoder_num_heads", type=int, default=8)
     parser.add_argument("--bias", type=bool, default=True)
@@ -61,28 +56,31 @@ def get_args(args):
 
     # Training
     parser.add_argument("--max_num_steps", type=int, default=200, help="Max number of steps of TSP2OPTEnv")
-    parser.add_argument("--horizon", type=int, default=10, help="Horizon length of RL agent to compute rewards and update")
+    parser.add_argument(
+        "--horizon", type=int, default=8, help="Horizon length of RL agent to compute rewards and update"
+    )
     parser.add_argument(
         "--eval_batch_size", type=int, default=1024, help="Number of instances per batch during evaluating",
     )
     parser.add_argument(
-        "--lr_model", type=float, default=1e-4, help="Set the learning rate for the actor network",
+        "--lr_model", type=float, default=0.001, help="Set the learning rate for the actor network",
     )
     parser.add_argument(
-        "--lr_critic", type=float, default=1e-4, help="Set the learning rate for the critic network",
+        "--lr_critic", type=float, default=0.001, help="Set the learning rate for the critic network",
     )
     parser.add_argument("--lr_decay", type=float, default=1.0, help="Learning rate decay per epoch")
     parser.add_argument("--eval_only", action="store_true", help="Set this value to only evaluate model")
-    parser.add_argument("--n_epochs", type=int, default=100, help="The number of epochs to train")
+    parser.add_argument("--n_epochs", type=int, default=200, help="The number of epochs to train")
     parser.add_argument("--seed", type=int, default=1234, help="Random seed to use")
     parser.add_argument("--no_cuda", action="store_true", help="Disable CUDA")
 
     parser.add_argument("--warmup_epochs", type=int, default=1)
     parser.add_argument("--warmup_batch_size", type=int, default=128)
-    parser.add_argument("--max_grad_norm", type=float, default=1.0)
+    parser.add_argument("--max_grad_norm", type=float, default=0.3)
     parser.add_argument(
         "--exp_beta", type=float, default=0.8, help="Exponential moving average baseline decay (default 0.8)",
     )
+    parser.add_argument("--no_norm_return", default=False, action="store_true", help="Disable normalised returns")
     parser.add_argument("--gamma", type=float, default=0.99, help="RL rewards decay")
     parser.add_argument("--value_beta", type=float, default=0.5, help="Value loss weight")
     parser.add_argument("--entropy_beta", type=float, default=0.005, help="Entropy loss weight")

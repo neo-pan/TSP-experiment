@@ -5,7 +5,9 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from environments import TSP2OPTEnv
+from environments.tsp_2opt import TSP2OPTState
 from torch.utils.tensorboard.writer import SummaryWriter
+from torch_discounted_cumsum import discounted_cumsum_right
 from torch_geometric.data import Batch, Data
 from torch_geometric.utils import to_dense_batch
 
@@ -52,23 +54,19 @@ def reinforce_train_batch(
     epoch: int,
     batch_id: int,
     step: int,
+    learn_count: int,
     env: TSP2OPTEnv,
-    logger,
+    logger: SummaryWriter,
     args,
-) -> None:
+) -> int:
     batch = batch.to(args.device)
     node_pos = to_dense_batch(batch.pos, batch.batch)[0]
     buffer = Buffer()
     done = False
+    batch_reward = 0
     state = env.reset(T=args.max_num_steps, node_pos=node_pos)
     # embed_data = model.init_embed(batch)
     # node_embeddings, _ = model.encoder(embed_data)
-    p_losses = []
-    v_losses = []
-    e_losses = []
-    grad_norms = None
-    batch_reward = 0
-    batch_value = 0
     while not done:
         count = 0
         embed_data = model.init_embed(batch)
@@ -76,49 +74,39 @@ def reinforce_train_batch(
         while count < args.horizon and not done:
             action, log_p, value = model(state, node_embeddings, embed_data.batch)
             state, reward, done, _ = env.step(action.squeeze())
+            batch_reward += reward
             buffer.actions.append(action)
             buffer.log_probs.append(log_p)
             buffer.rewards.append(reward)
             buffer.values.append(value)
-            batch_reward += reward.mean().item()
-            batch_value += value.mean().item()
             count += 1
-        p_loss, v_loss, e_loss, grad_norms = accumulate_loss(optimizer, buffer, epoch, args)
-        p_losses.append(p_loss)
-        v_losses.append(v_loss)
-        e_losses.append(e_loss)
+        learn_count = update_model(optimizer, buffer, state, done, epoch, count, learn_count, step, logger, args)
 
-    p_loss = torch.stack(p_losses).mean()
-    v_loss = torch.stack(v_losses).mean()
-    e_loss = torch.stack(e_losses).mean()
+    logger.add_scalar("batch_rewards_train", batch_reward.mean().item(), step)
 
-    # Logging
-    if step % int(args.log_step) == 0:
-        log_values(
-            cost=state.best_tour_len,
-            grad_norms=grad_norms,
-            epoch=epoch,
-            batch_id=batch_id,
-            step=step,
-            p_loss=p_loss,
-            v_loss=v_loss,
-            e_loss=e_loss,
-            reward=batch_reward,
-            value=batch_value,
-            logger=logger,
-            args=args,
-        )
+    return learn_count
 
 
-def accumulate_loss(optimizer: optim.Optimizer, buffer: Buffer, epoch: int, args):
+def update_model(
+    optimizer: optim.Optimizer,
+    buffer: Buffer,
+    state: TSP2OPTState,
+    done: bool,
+    epoch: int,
+    count: int,
+    learn_count: int,
+    global_step: int,
+    logger: SummaryWriter,
+    args,
+):
 
-    returns = []
-    R = torch.zeros_like(buffer.rewards[0])
-    for i in reversed(range(len(buffer.rewards))):
-        R = buffer.rewards[i] + args.gamma * R
-        returns.insert(0, R)
-
-    returns = torch.stack(returns, dim=0).detach()  # [horizon, batch_size, 1]
+    rewards = torch.stack(buffer.rewards, dim=0)  # [horizon, batch_size, 1]
+    returns = discounted_return(rewards, args.gamma, count)  # [horizon, batch_size, 1]
+    if not args.no_norm_return:
+        r_mean = returns.mean()
+        r_std = returns.std()
+        eps = torch.finfo(torch.float).eps  # small number to avoid div/0
+        returns = (returns - r_mean) / (r_std + eps)
     values = torch.stack(buffer.values, dim=0)  # [horizon, batch_size, 1]
     advantages = (returns - values).detach()  # [horizon, batch_size, 1]
 
@@ -127,23 +115,53 @@ def accumulate_loss(optimizer: optim.Optimizer, buffer: Buffer, epoch: int, args
     log_likelihood = logps.gather(-1, actions).squeeze(-1)  # [horizon, batch_size, 2]
     log_likelihood = log_likelihood.mean(2).unsqueeze(2)  # [horizon, batch_size, 1]
 
-    entropies = log_p_to_entropy(logps).mean(2)  # [horizon, batch_size]
+    entropies = log_p_to_entropy(logps).mean(2).unsqueeze(2)  # [horizon, batch_size, 1]
 
     p_loss = (-log_likelihood * advantages).mean()
     v_loss = args.value_beta * (returns - values).pow(2).mean()
     e_loss = (0.9 ** (epoch + 1)) * args.entropy_beta * entropies.sum(0).mean()
-
-    loss = p_loss + v_loss - e_loss
+    r_loss = -e_loss + v_loss
+    loss = p_loss + r_loss
 
     optimizer.zero_grad()
-    loss.backward(retain_graph=False)
+    p_loss.backward(retain_graph=True)
     grad_norms = clip_grad_norms(optimizer.param_groups, args.max_grad_norm)
-
+    r_loss.backward(retain_graph=False)
     optimizer.step()
 
     buffer.clear_buffer()
+    log_values(
+        cost=state.best_tour_len,
+        grad_norms=grad_norms,
+        done=done,
+        epoch=epoch,
+        global_step=global_step,
+        learn_count=learn_count,
+        p_loss=p_loss,
+        v_loss=v_loss,
+        e_loss=e_loss,
+        loss=loss,
+        returns=returns.mean(),
+        value=values.mean(),
+        logger=logger,
+        args=args,
+    )
 
-    return p_loss.detach(), v_loss.detach(), e_loss.detach(), grad_norms
+    learn_count += 1
+
+    return learn_count
+
+
+def discounted_return(rewards: torch.Tensor, gamma: int, count: int):
+    assert rewards.dim() == 3
+    assert rewards.size(0) == count
+    assert rewards.size(2) == 1
+
+    # transpose `rewards` as function `discounted_cumsum` apply on second dim
+    # squeeze `rewards` as function `discounted_cumsum` only work for 2-dim-tensor
+    returns = discounted_cumsum_right(rewards.squeeze(2).T, gamma).T
+
+    return returns.unsqueeze(2)
 
 
 def log_p_to_entropy(log_probs):
@@ -155,24 +173,37 @@ def log_p_to_entropy(log_probs):
 
 
 def log_values(
-    cost, grad_norms, epoch, batch_id, step, p_loss, v_loss, e_loss, reward, value, logger: SummaryWriter, args,
+    cost,
+    grad_norms,
+    done,
+    epoch,
+    global_step,
+    learn_count,
+    p_loss,
+    v_loss,
+    e_loss,
+    loss,
+    returns,
+    value,
+    logger: SummaryWriter,
+    args,
 ):
     avg_len = cost.mean().item()
     grad_norms, grad_norms_clipped = grad_norms
-
+    if done:
     # Log values to screen
-    print("epoch: {}, train_batch_id: {}, avg_best_cost: {}".format(epoch, batch_id, avg_len))
-
-    print("grad_norm: {}, clipped: {}".format(grad_norms, grad_norms_clipped))
+        print("epoch: {}, learn_count: {}, avg_best_cost: {}".format(epoch, learn_count, avg_len))
+        print("grad_norm: {}, clipped: {}".format(grad_norms, grad_norms_clipped))
+        logger.add_scalar("tour_len_train", avg_len, global_step)
 
     # Log values to tensorboard
-    logger.add_scalar("avg_len", avg_len, step)
 
-    logger.add_scalar("grad_norm", grad_norms[0], step)
-    logger.add_scalar("grad_norm_clipped", grad_norms_clipped[0], step)
+    logger.add_scalar("grad_norm", grad_norms[0], learn_count)
+    logger.add_scalar("grad_norm_clipped", grad_norms_clipped[0], learn_count)
 
-    logger.add_scalar("actor_loss", p_loss.item(), step)
-    logger.add_scalar("baseline_loss", v_loss.item(), step)
-    logger.add_scalar("entropy_loss", e_loss.item(), step)
-    logger.add_scalar("env_reward", reward, step)
-    logger.add_scalar("predict_value", value, step)
+    logger.add_scalar("loss_policy", p_loss.item(), learn_count)
+    logger.add_scalar("loss_baseline", v_loss.item(), learn_count)
+    logger.add_scalar("loss_entropy", e_loss.item(), learn_count)
+    logger.add_scalar("loss", loss.item(), learn_count)
+    logger.add_scalar("env_returns", returns.item(), learn_count)
+    logger.add_scalar("predict_value", value.item(), learn_count)

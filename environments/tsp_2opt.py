@@ -7,10 +7,8 @@ from .base import _BaseEnv
 
 
 class TSP2OPTState(NamedTuple):
-    curr_tour: torch.Tensor
     curr_edge_list: torch.Tensor
     curr_tour_len: torch.Tensor
-    best_tour: torch.Tensor
     best_edge_list: torch.Tensor
     best_tour_len: torch.Tensor
 
@@ -33,8 +31,9 @@ class TSP2OPTEnv(_BaseEnv):
 
         # take 2-opt action
         self._step_count += 1
+        action = action.detach()
         action = action.sort(dim=1).values
-        self.curr_tour, self.curr_edge_list, self.curr_tour_len = self.apply_2opt(action)
+        self.apply_2opt(action)
 
         # get reward, shape=[batch_size, 1]
         reward = (self.best_tour_len - self.curr_tour_len).clamp(min=0)
@@ -52,10 +51,8 @@ class TSP2OPTEnv(_BaseEnv):
 
         return (
             TSP2OPTState(
-                curr_tour=self.curr_tour.clone(),
                 curr_edge_list=self.curr_edge_list.clone(),
                 curr_tour_len=self.curr_tour_len.clone(),
-                best_tour=self.best_tour.clone(),
                 best_edge_list=self.best_edge_list.clone(),
                 best_tour_len=self.best_tour_len.clone(),
             ),
@@ -65,26 +62,27 @@ class TSP2OPTEnv(_BaseEnv):
         )
 
     def apply_2opt(self, action: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        # gather removed edges from previous edge list
         edge_to_remove = self.curr_edge_list.gather(1, action[..., None].expand(self.batch_size, 2, 2))
-        curr_tour = self.curr_tour.clone()
+
         # get mask of partial tour that need flip
         low = action[:, 0][:, None].expand(self.batch_size, self.graph_size)
         high = action[:, 1][:, None].expand(self.batch_size, self.graph_size)
         idx = torch.arange(self.graph_size, device=self.device)[None, :].expand(self.batch_size, self.graph_size)
         mask = torch.logical_and(idx > low, idx <= high)
 
-        flipped_part = curr_tour.fliplr().masked_select(mask.fliplr())
-        curr_tour.masked_scatter_(mask, flipped_part)
+        # update tour and edge list
+        flipped_part = self.curr_tour.fliplr().masked_select(mask.fliplr())
+        self.curr_tour.masked_scatter_(mask, flipped_part)
+        self.curr_edge_list = torch.stack([self.curr_tour, self.curr_tour.roll(-1, [1])], dim=2)
 
-        curr_edge_list = torch.stack([curr_tour, curr_tour.roll(-1, [1])], dim=2)
+        # gather new edges from current edge list
+        edge_to_add = self.curr_edge_list.gather(1, action[..., None].expand(self.batch_size, 2, 2))
 
-        edge_to_add = curr_edge_list.gather(1, action[..., None].expand(self.batch_size, 2, 2))
-
-        curr_tour_len = (
+        # compute new tour length
+        self.curr_tour_len = (
             self.curr_tour_len - self._get_len_of_edge_list(edge_to_remove) + self._get_len_of_edge_list(edge_to_add)
         )
-
-        return curr_tour, curr_edge_list, curr_tour_len
 
     @property
     def done(self) -> bool:
@@ -123,7 +121,7 @@ class TSP2OPTEnv(_BaseEnv):
             assert init_tour.dim() == 2
             assert init_tour.size(0) == self.batch_size
             assert init_tour.size(1) == self.graph_size
-            self.curr_tour = init_tour
+            self.curr_tour = init_tour.detach().clone()
         else:
             self.curr_tour = torch.rand((self.batch_size, self.graph_size), device=self.device).argsort(dim=1)
         self.best_tour = self.curr_tour.clone()
@@ -137,10 +135,8 @@ class TSP2OPTEnv(_BaseEnv):
         self.best_tour_len = self.curr_tour_len.clone()
 
         return TSP2OPTState(
-            curr_tour=self.curr_tour.clone(),
             curr_edge_list=self.curr_edge_list.clone(),
             curr_tour_len=self.curr_tour_len.clone(),
-            best_tour=self.best_tour.clone(),
             best_edge_list=self.best_edge_list.clone(),
             best_tour_len=self.best_tour_len.clone(),
         )

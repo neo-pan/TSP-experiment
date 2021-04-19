@@ -4,10 +4,12 @@ import os
 import pprint as pp
 import time
 from datetime import datetime
-import numpy as np
 
+import numpy as np
 import torch
 import torch.optim as optim
+import torch.profiler as pytprofiler
+import wandb
 from torch.utils.tensorboard import SummaryWriter
 from torch_geometric.data import DataLoader
 from torch_geometric.utils import to_dense_batch
@@ -34,7 +36,7 @@ def validate(model, dataset, env, args):
 def rollout(model, dataset, env, args):
     # Put in greedy evaluation mode!
 
-    # model.set_decode_type("greedy")
+    model.set_decode_type("sampling")
     model.eval()
 
     def eval_model_bat(bat):
@@ -62,10 +64,11 @@ if __name__ == "__main__":
 
     # Set the random seed
     torch.manual_seed(args.seed)
+    torch.backends.cudnn.benchmark = True
+    torch.backends.cudnn.deterministic = True
 
     # Optionally configure tensorboard
     tb_logger = SummaryWriter(os.path.join(args.log_dir, "{}_{}".format(args.problem, args.graph_size), args.run_name))
-    tb_logger.add_hparams(vars(args), {"date": np.array((datetime.today().day))}, run_name=args.run_name)
 
     os.makedirs(args.save_dir, exist_ok=True)
     # Save arguments so exact configuration can always be found
@@ -86,6 +89,11 @@ if __name__ == "__main__":
     optimizer = optim.Adam([{"params": model.parameters(), "lr": args.lr_model}])
     lr_scheduler = optim.lr_scheduler.LambdaLR(optimizer, lambda epoch: args.lr_decay ** epoch)
 
+    # init wandb logging
+    wandb.init(project="TSP-2opt", entity="neopan", sync_tensorboard=True)
+    wandb.config.update(vars(args))
+    wandb.watch(model, log="all", log_freq=100)
+
     # Load saved data
     if load_data:
         model.load_state_dict(load_data["model"])
@@ -96,22 +104,29 @@ if __name__ == "__main__":
     if args.load_path:
         epoch_resume = int(os.path.splitext(os.path.split(args.load_path)[-1])[0].split("-")[1])
         args.epoch_start = epoch_resume + 1
-    val_dataset = TSPDataset(size=args.val_size, args=args, load_path=args.val_dataset)
+    val_dataset = TSPDataset(
+        size=args.val_size, graph_size=args.graph_size, graph_type=args.graph_type, load_path=args.val_dataset
+    )
 
     if args.eval_only:
         validate(model, val_dataset, env, args)
     else:
         learn_count = 0
         for epoch in range(args.epoch_start, args.epoch_start + args.n_epochs):
-            if epoch == 100:
-                args.horizon = 10
+            # if epoch == 100:
+            #     args.horizon = 10
             print(
                 "Start train epoch {}, lr={} for run {}".format(epoch, optimizer.param_groups[0]["lr"], args.run_name)
             )
             step = epoch * (args.epoch_size // args.batch_size)
             start_time = time.time()
             tb_logger.add_scalar("learnrate_pg0", optimizer.param_groups[0]["lr"], step)
-            training_dataset = TSPDataset(size=args.epoch_size, args=args, load_path=args.train_dataset)
+            training_dataset = TSPDataset(
+                size=args.epoch_size,
+                graph_size=args.graph_size,
+                graph_type=args.graph_type,
+                load_path=args.train_dataset,
+            )
             training_dataloader = DataLoader(training_dataset, batch_size=args.batch_size, num_workers=args.num_workers)
 
             model.train()
@@ -138,7 +153,12 @@ if __name__ == "__main__":
                 )
 
             avg_len = validate(model, val_dataset, env, args)
+            opt = sum([g.opt for g in val_dataset]) / len(val_dataset)
+            opt_gap = (avg_len - opt) / opt
+            print(f"\033[31m Optimal Gap {opt_gap}\033[0m")
             tb_logger.add_scalar("tour_len_val", avg_len, step)
+            tb_logger.add_scalar("gap_val", opt_gap, step)
+            wandb.log({"tour_len_val": avg_len, "gap_val": opt_gap})
 
             # lr_scheduler should be called at end of epoch
             lr_scheduler.step()

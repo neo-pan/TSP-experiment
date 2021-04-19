@@ -1,9 +1,10 @@
 import math
 from pprint import pprint
-
+import wandb
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import torch.profiler as pytprofiler
 from environments import TSP2OPTEnv
 from environments.tsp_2opt import TSP2OPTState
 from torch.utils.tensorboard.writer import SummaryWriter
@@ -75,10 +76,10 @@ def reinforce_train_batch(
             action, log_p, value = model(state, node_embeddings, embed_data.batch)
             state, reward, done, _ = env.step(action.squeeze())
             batch_reward += reward
-            buffer.actions.append(action)
-            buffer.log_probs.append(log_p)
-            buffer.rewards.append(reward)
-            buffer.values.append(value)
+            buffer.actions.append(action.cpu())
+            buffer.log_probs.append(log_p.cpu())
+            buffer.rewards.append(reward.cpu())
+            buffer.values.append(value.cpu())
             count += 1
         learn_count = update_model(optimizer, buffer, state, done, epoch, count, learn_count, step, logger, args)
 
@@ -116,6 +117,7 @@ def update_model(
     log_likelihood = log_likelihood.mean(2).unsqueeze(2)  # [horizon, batch_size, 1]
 
     entropies = log_p_to_entropy(logps).mean(2).unsqueeze(2)  # [horizon, batch_size, 1]
+    wandb.log({"entropy": entropies.detach().mean().item()})
 
     p_loss = (-log_likelihood * advantages).mean()
     v_loss = args.value_beta * (returns - values).pow(2).mean()
@@ -191,10 +193,11 @@ def log_values(
     avg_len = cost.mean().item()
     grad_norms, grad_norms_clipped = grad_norms
     if done:
-    # Log values to screen
+        # Log values to screen
         print("epoch: {}, learn_count: {}, avg_best_cost: {}".format(epoch, learn_count, avg_len))
         print("grad_norm: {}, clipped: {}".format(grad_norms, grad_norms_clipped))
         logger.add_scalar("tour_len_train", avg_len, global_step)
+        wandb.log({"tour_len_train": avg_len})
 
     # Log values to tensorboard
 
@@ -207,3 +210,12 @@ def log_values(
     logger.add_scalar("loss", loss.item(), learn_count)
     logger.add_scalar("env_returns", returns.item(), learn_count)
     logger.add_scalar("predict_value", value.item(), learn_count)
+
+    wandb.log(
+        {
+            "grad_norm": grad_norms[0],
+            "loss_policy": p_loss.item(),
+            "loss_baseline": v_loss.item(),
+            "loss_entropy": e_loss.item(),
+        }
+    )

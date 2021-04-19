@@ -123,7 +123,9 @@ if __name__ == "__main__":
     if args.load_path:
         epoch_resume = int(os.path.splitext(os.path.split(args.load_path)[-1])[0].split("-")[1])
         args.epoch_start = epoch_resume + 1
-    val_dataset = TSPDataset(size=args.val_size, args=args, load_path=args.val_dataset)
+    val_dataset = TSPDataset(
+        size=args.val_size, graph_size=args.graph_size, graph_type=args.graph_type, load_path=args.val_dataset
+    )
 
     if args.eval_only:
         validate(model, val_dataset, env, args)
@@ -135,7 +137,12 @@ if __name__ == "__main__":
             step = epoch * (args.epoch_size // args.batch_size)
             start_time = time.time()
             tb_logger.add_scalar("learnrate_pg0", optimizer.param_groups[0]["lr"], step)
-            training_dataset = TSPDataset(size=args.epoch_size, args=args, load_path=args.train_dataset)
+            training_dataset = TSPDataset(
+                size=args.epoch_size,
+                graph_size=args.graph_size,
+                graph_type=args.graph_type,
+                load_path=args.train_dataset,
+            )
             training_dataloader = DataLoader(training_dataset, batch_size=args.batch_size, num_workers=args.num_workers)
 
             if args.warmup_epochs > 0 and epoch < args.warmup_epochs:

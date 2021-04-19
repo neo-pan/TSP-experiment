@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from typing import Any, NamedTuple, Tuple
 from torch_geometric.data import Data, Batch
 from .encoder import TourEncoder, cal_size_list, MLP, GNNEncoder
-from .decoder import AttentionDecoder
+from .decoder import AttentionDecoder, SimpleDecoder
 
 
 class TSP2OPTAgent(nn.Module):
@@ -56,6 +56,7 @@ class TSP2OPTAgent(nn.Module):
 
         self.value_decoder = nn.Sequential(
             nn.Linear(self.embed_dim * 2, self.embed_dim),
+            nn.BatchNorm1d(self.embed_dim),
             nn.ReLU(),
             nn.Linear(self.embed_dim, 1)
         )
@@ -71,7 +72,7 @@ class TSP2OPTAgent(nn.Module):
         assert data.pos.size(-1) == self.node_dim
         assert data.edge_attr.size(-1) == self.edge_dim
 
-        x = self.node_embedder(data.pos)
+        x = self.node_embedder(data.x)
         edge_attr = self.edge_embedder(data.edge_attr)
 
         d = data.clone()

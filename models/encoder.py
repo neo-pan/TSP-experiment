@@ -104,7 +104,7 @@ class GNNEncoder(nn.Module):
         self.pooling_func = get_pooling_func(pooling_method)
         self.norm_class = get_normalization_class(normalization)
         gnn_layer_list = []
-        norm_list = []
+        # norm_list = []
         ff_list = []
         for _ in range(self.num_layers):
             gnn_layer = TransformerConv(
@@ -114,18 +114,15 @@ class GNNEncoder(nn.Module):
                 edge_dim=self.embed_dim,
             )
             gnn_layer_list.append(gnn_layer)
-            norm = self.norm_class(in_channels=self.embed_dim)
-            norm_list.append(norm)
             feed_forward = nn.Sequential(
                 nn.Linear(self.embed_dim, feed_forward_hidden),
+                self.norm_class(in_channels=feed_forward_hidden),
                 nn.ReLU(),
                 nn.Linear(feed_forward_hidden, self.embed_dim),
-                self.norm_class(in_channels=self.embed_dim),
             )
             ff_list.append(feed_forward)
 
         self.gnn_layer_list = nn.ModuleList(gnn_layer_list)
-        self.norm_list = nn.ModuleList(norm_list)
         self.ff_list = nn.ModuleList(ff_list)
 
     def forward(self, data: Batch) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -145,9 +142,8 @@ class GNNEncoder(nn.Module):
         edge_index = data.edge_index
         edge_attr = data.edge_attr
 
-        for gnn_layer, norm, ff in zip(self.gnn_layer_list, self.norm_list, self.ff_list):
-            x = checkpoint(gnn_layer, x, edge_index, edge_attr)
-            x = norm(x)
+        for gnn_layer, ff in zip(self.gnn_layer_list, self.ff_list):
+            x = gnn_layer(x, edge_index, edge_attr)
             x = ff(x)
 
         node_embeddings, dense_mask = to_dense_batch(x, data.batch)
@@ -180,9 +176,9 @@ class TourEncoder(nn.Module):
         for _ in range(self.num_layers):
             mlp = nn.Sequential(
                 nn.Linear(self.embed_dim, self.embed_dim),
+                self.norm_class(in_channels=self.embed_dim),
                 nn.ReLU(),
                 nn.Linear(self.embed_dim, self.embed_dim),
-                self.norm_class(in_channels=self.embed_dim),
             )
             gnn_layer = GINConv(nn=mlp)
             gnn_layer_list.append(gnn_layer)
@@ -246,6 +242,9 @@ class EdgeFeatureExtractor(MessagePassing):
         # self.x_j_lin = nn.Linear(self.in_channels, self.edge_dim, self.bias)
         self.edge_lin = nn.Linear(self.edge_dim, self.edge_dim, self.bias)
 
+        self.norm_x = nn.BatchNorm1d(self.in_channels)
+        self.norm_edge = nn.BatchNorm1d(self.edge_dim)
+
         self._edge = None
 
         self.reset_parameters()
@@ -267,7 +266,8 @@ class EdgeFeatureExtractor(MessagePassing):
         node_x = self.node_lin(node_x)
         solution_x = self.solution_lin(solution_x)
 
-        x = F.relu(node_x + solution_x)
+        x = self.norm_x(node_x + solution_x)
+        x = F.relu(x)
 
         self.propagate(edge_index, x=x, size=None)
 
@@ -279,8 +279,10 @@ class EdgeFeatureExtractor(MessagePassing):
     def message(self, x_j: torch.Tensor, x_i: torch.Tensor) -> torch.Tensor:
 
         edge_embedding = x_i + x_j  # self.x_i_lin(x_i) + self.x_j_lin(x_j)
-        edge_embedding = F.relu(edge_embedding)
+
         edge_embedding = self.edge_lin(edge_embedding)
+        edge_embedding = self.norm_edge(edge_embedding)
+        edge_embedding = F.relu(edge_embedding)
 
         self._edge = edge_embedding
 

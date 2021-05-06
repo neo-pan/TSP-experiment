@@ -5,6 +5,8 @@ import torch
 
 from .base import _BaseEnv
 
+FLOAT_SCALE = 10000
+
 
 class TSP2OPTState(NamedTuple):
     curr_edge_list: torch.Tensor
@@ -36,7 +38,7 @@ class TSP2OPTEnv(_BaseEnv):
         self.apply_2opt(action)
 
         # get reward, shape=[batch_size, 1]
-        reward = (self.best_tour_len - self.curr_tour_len).clamp(min=0)
+        reward = ((self.best_tour_len - self.curr_tour_len) / FLOAT_SCALE).float().clamp(min=0.0)
 
         # update best record
         new_best_mask = (self.curr_tour_len < self.best_tour_len).squeeze()  # shape=[batch_size]
@@ -52,9 +54,9 @@ class TSP2OPTEnv(_BaseEnv):
         return (
             TSP2OPTState(
                 curr_edge_list=self.curr_edge_list.clone(),
-                curr_tour_len=self.curr_tour_len.clone(),
+                curr_tour_len=self.curr_tour_len.float() / FLOAT_SCALE,
                 best_edge_list=self.best_edge_list.clone(),
-                best_tour_len=self.best_tour_len.clone(),
+                best_tour_len=self.best_tour_len.float() / FLOAT_SCALE,
             ),
             reward,
             self.done,
@@ -114,7 +116,9 @@ class TSP2OPTEnv(_BaseEnv):
         self.device = node_pos.device
         assert pos_dim == 2
         self._node_pos = node_pos.detach()
-        self._distance_matrix = (self._node_pos[:, :, None, :] - self._node_pos[:, None, :, :]).norm(p=2, dim=-1)
+        self._distance_matrix = (
+            (self._node_pos[:, :, None, :] - self._node_pos[:, None, :, :]).norm(p=2, dim=-1) * FLOAT_SCALE
+        ).long()
         self._step_count = 0
 
         if init_tour is not None:
@@ -136,9 +140,9 @@ class TSP2OPTEnv(_BaseEnv):
 
         return TSP2OPTState(
             curr_edge_list=self.curr_edge_list.clone(),
-            curr_tour_len=self.curr_tour_len.clone(),
+            curr_tour_len=self.curr_tour_len.float() / FLOAT_SCALE,
             best_edge_list=self.best_edge_list.clone(),
-            best_tour_len=self.best_tour_len.clone(),
+            best_tour_len=self.best_tour_len.float() / FLOAT_SCALE,
         )
 
     def _get_len_of_edge_list(self, edge_list: torch.Tensor) -> torch.Tensor:

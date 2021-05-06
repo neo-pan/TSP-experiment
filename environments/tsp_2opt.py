@@ -116,9 +116,7 @@ class TSP2OPTEnv(_BaseEnv):
         self.device = node_pos.device
         assert pos_dim == 2
         self._node_pos = node_pos.detach()
-        self._distance_matrix = (
-            (self._node_pos[:, :, None, :] - self._node_pos[:, None, :, :]).norm(p=2, dim=-1) * FLOAT_SCALE
-        ).long()
+        self._distance_matrix = (torch.cdist(self._node_pos, self._node_pos, p=2.0) * FLOAT_SCALE).long()
         self._step_count = 0
 
         if init_tour is not None:

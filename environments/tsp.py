@@ -71,7 +71,7 @@ class TSPEnv(_BaseEnv):
         self.device = node_pos.device
         assert pos_dim == 2
         self._node_pos = node_pos.detach()
-        self._distance_matrix = (self._node_pos[:, :, None, :] - self._node_pos[:, None, :, :]).norm(p=2, dim=-1)
+        self._distance_matrix = torch.cdist(self._node_pos, self._node_pos, p=2.0)
         self._step_count = 0
         self._avail_mask = torch.ones((self.batch_size, self.graph_size), dtype=np.bool, device=self.device)
         self._batch_idx = torch.arange(self.batch_size, dtype=torch.long, device=self.device)

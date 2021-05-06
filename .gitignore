@@ -8,3 +8,4 @@ logs/
 outputs/
 .ipynb_checkpoints/
 temp/
+wandb/

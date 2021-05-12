@@ -57,16 +57,16 @@ def get_args(args):
     # Training
     parser.add_argument("--max_num_steps", type=int, default=200, help="Max number of steps of TSP2OPTEnv")
     parser.add_argument(
-        "--horizon", type=int, default=8, help="Horizon length of RL agent to compute rewards and update"
+        "--horizon", type=int, default=10, help="Horizon length of RL agent to compute rewards and update"
     )
     parser.add_argument(
         "--eval_batch_size", type=int, default=1024, help="Number of instances per batch during evaluating",
     )
     parser.add_argument(
-        "--lr_model", type=float, default=0.001, help="Set the learning rate for the actor network",
+        "--lr_model", type=float, default=0.0001, help="Set the learning rate for the actor network",
     )
     parser.add_argument(
-        "--lr_critic", type=float, default=0.001, help="Set the learning rate for the critic network",
+        "--lr_critic", type=float, default=0.0001, help="Set the learning rate for the critic network",
     )
     parser.add_argument("--lr_decay", type=float, default=1.0, help="Learning rate decay per epoch")
     parser.add_argument("--eval_only", action="store_true", help="Set this value to only evaluate model")

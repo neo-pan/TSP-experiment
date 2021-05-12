@@ -6,15 +6,16 @@ import time
 from datetime import datetime
 
 import numpy as np
+import sty
 import torch
 import torch.optim as optim
-import torch.profiler as pytprofiler
-import wandb
+import torch.cuda.amp as amp
 from torch.utils.tensorboard import SummaryWriter
 from torch_geometric.data import DataLoader
 from torch_geometric.utils import to_dense_batch
 from tqdm import tqdm
 
+import wandb
 from args_2opt import get_args
 from datasets.tsp import TSPDataset
 from environments.tsp_2opt import TSP2OPTEnv
@@ -48,6 +49,9 @@ def rollout(model, dataset, env, args):
             node_embeddings, _ = model.encoder(embed_data)
             while not done:
                 action, _, _ = model(state, node_embeddings, embed_data.batch)
+                # adapt costa_decoder outputed action to our environment
+                action[:, 0] -= 1
+                action %= args.graph_size
                 state, _, done, _ = env.step(action.squeeze())
 
             return state.best_tour_len.cpu()
@@ -88,6 +92,7 @@ if __name__ == "__main__":
     model = TSP2OPTAgent(args).to(args.device)
     optimizer = optim.Adam([{"params": model.parameters(), "lr": args.lr_model}])
     lr_scheduler = optim.lr_scheduler.LambdaLR(optimizer, lambda epoch: args.lr_decay ** epoch)
+    scaler = amp.grad_scaler.GradScaler(enabled=True)
 
     # init wandb logging
     wandb.init(project="TSP-2opt", entity="neopan", sync_tensorboard=True)
@@ -109,7 +114,14 @@ if __name__ == "__main__":
     )
 
     if args.eval_only:
-        validate(model, val_dataset, env, args)
+        avg_len = validate(model, val_dataset, env, args)
+        opt = sum([g.opt for g in val_dataset]) / len(val_dataset)
+        opt_gap = (avg_len - opt) / opt
+        print(
+            sty.fg.green
+            + f"Validation, average len: {avg_len:.3f}, opt len:{opt:.3f}, gap: {opt_gap*100:.3f}%"
+            + sty.fg.rs
+        )
     else:
         learn_count = 0
         for epoch in range(args.epoch_start, args.epoch_start + args.n_epochs):
@@ -133,7 +145,7 @@ if __name__ == "__main__":
             model.set_decode_type(args.decode_type)
             for batch_id, batch in enumerate(tqdm(training_dataloader, disable=args.no_progress_bar)):
                 learn_count = reinforce_train_batch(
-                    model, optimizer, batch, epoch, batch_id, step, learn_count, env, tb_logger, args,
+                    model, optimizer, scaler, batch, epoch, batch_id, step, learn_count, env, tb_logger, args,
                 )
                 step += 1
 
@@ -155,7 +167,11 @@ if __name__ == "__main__":
             avg_len = validate(model, val_dataset, env, args)
             opt = sum([g.opt for g in val_dataset]) / len(val_dataset)
             opt_gap = (avg_len - opt) / opt
-            print(f"\033[31m Optimal Gap {opt_gap}\033[0m")
+            print(
+            sty.fg.green
+            + f"Validation, average len: {avg_len:.3f}, opt len:{opt:.3f}, gap: {opt_gap*100:.3f}%"
+            + sty.fg.rs
+            )
             tb_logger.add_scalar("tour_len_val", avg_len, step)
             tb_logger.add_scalar("gap_val", opt_gap, step)
             wandb.log({"tour_len_val": avg_len, "gap_val": opt_gap})

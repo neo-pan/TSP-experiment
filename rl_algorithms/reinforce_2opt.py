@@ -4,7 +4,7 @@ import wandb
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import torch.profiler as pytprofiler
+import torch.cuda.amp as amp
 from environments import TSP2OPTEnv
 from environments.tsp_2opt import TSP2OPTState
 from torch.utils.tensorboard.writer import SummaryWriter
@@ -20,12 +20,14 @@ class Buffer:
         self.log_probs = []
         self.rewards = []
         self.values = []
+        self.entropies = []
 
     def clear_buffer(self):
         del self.actions[:]
         del self.log_probs[:]
         del self.rewards[:]
         del self.values[:]
+        del self.entropies[:]
 
 
 def clip_grad_norms(param_groups, max_norm=math.inf):
@@ -51,6 +53,7 @@ def clip_grad_norms(param_groups, max_norm=math.inf):
 def reinforce_train_batch(
     model: nn.Module,
     optimizer: optim.Optimizer,
+    scaler: amp.grad_scaler.GradScaler,
     batch: Batch,
     epoch: int,
     batch_id: int,
@@ -70,18 +73,24 @@ def reinforce_train_batch(
     # node_embeddings, _ = model.encoder(embed_data)
     while not done:
         count = 0
-        embed_data = model.init_embed(batch)
-        node_embeddings, _ = model.encoder(embed_data)
+        with amp.autocast_mode.autocast(enabled=True):
+            embed_data = model.init_embed(batch)
+            node_embeddings, _ = model.encoder(embed_data)
         while count < args.horizon and not done:
-            action, log_p, value = model(state, node_embeddings, embed_data.batch)
+            with amp.autocast_mode.autocast(enabled=True):
+                action, (log_probs_pts, entropies), value = model(state, node_embeddings, embed_data.batch)
+                # adapt costa_decoder outputed action to our environment
+                action[:, 0] -= 1
+                action %= args.graph_size
             state, reward, done, _ = env.step(action.squeeze())
             batch_reward += reward
-            buffer.actions.append(action.cpu())
-            buffer.log_probs.append(log_p.cpu())
-            buffer.rewards.append(reward.cpu())
-            buffer.values.append(value.cpu())
+            buffer.actions.append(action)
+            buffer.log_probs.append(log_probs_pts)
+            buffer.rewards.append(reward)
+            buffer.values.append(value)
+            buffer.entropies.append(entropies)
             count += 1
-        learn_count = update_model(optimizer, buffer, state, done, epoch, count, learn_count, step, logger, args)
+        learn_count = update_model(optimizer, scaler, buffer, state, done, epoch, count, learn_count, step, logger, args)
 
     logger.add_scalar("batch_rewards_train", batch_reward.mean().item(), step)
 
@@ -90,6 +99,7 @@ def reinforce_train_batch(
 
 def update_model(
     optimizer: optim.Optimizer,
+    scaler: amp.grad_scaler.GradScaler,
     buffer: Buffer,
     state: TSP2OPTState,
     done: bool,
@@ -111,12 +121,13 @@ def update_model(
     values = torch.stack(buffer.values, dim=0)  # [horizon, batch_size, 1]
     advantages = (returns - values).detach()  # [horizon, batch_size, 1]
 
-    logps = torch.stack(buffer.log_probs, dim=0)  # [horizon, batch_size, 2, graph_size]
-    actions = torch.stack(buffer.actions, dim=0)  # [horizon, batch_size, 2, 1]
-    log_likelihood = logps.gather(-1, actions).squeeze(-1)  # [horizon, batch_size, 2]
+    # logps = torch.stack(buffer.log_probs, dim=0)  # [horizon, batch_size, 2, graph_size]
+    # actions = torch.stack(buffer.actions, dim=0)  # [horizon, batch_size, 2, 1]
+    # log_likelihood = logps.gather(-1, actions).squeeze(-1)  # [horizon, batch_size, 2]
+    log_likelihood = torch.stack(buffer.log_probs, dim=0)
     log_likelihood = log_likelihood.mean(2).unsqueeze(2)  # [horizon, batch_size, 1]
 
-    entropies = log_p_to_entropy(logps).mean(2).unsqueeze(2)  # [horizon, batch_size, 1]
+    entropies = torch.stack(buffer.entropies, dim=0).mean(2).unsqueeze(2)  # [horizon, batch_size, 1]
     wandb.log({"entropy": entropies.detach().mean().item()})
 
     p_loss = (-log_likelihood * advantages).mean()
@@ -126,10 +137,12 @@ def update_model(
     loss = p_loss + r_loss
 
     optimizer.zero_grad()
-    p_loss.backward(retain_graph=True)
-    grad_norms = clip_grad_norms(optimizer.param_groups, args.max_grad_norm)
-    r_loss.backward(retain_graph=False)
-    optimizer.step()
+    scaler.scale(p_loss).backward(retain_graph=True)
+    # scaler.unscale_(optimizer)
+    grad_norms = clip_grad_norms(optimizer.param_groups) #, args.max_grad_norm)
+    scaler.scale(r_loss).backward(retain_graph=False)
+    scaler.step(optimizer)
+    scaler.update()
 
     buffer.clear_buffer()
     log_values(

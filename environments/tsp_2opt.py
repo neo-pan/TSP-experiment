@@ -9,8 +9,10 @@ FLOAT_SCALE = 10000
 
 
 class TSP2OPTState(NamedTuple):
+    curr_tour: torch.Tensor
     curr_edge_list: torch.Tensor
     curr_tour_len: torch.Tensor
+    best_tour: torch.Tensor
     best_edge_list: torch.Tensor
     best_tour_len: torch.Tensor
 
@@ -28,8 +30,8 @@ class TSP2OPTEnv(_BaseEnv):
         assert self._step_count < self.T, f"TSP2OPTEnv is already terminated"
 
         assert action.max() < self.graph_size
-        assert (action[:, 0] != action[:, 1]).all()
-        assert ((action.max(1).values - action.min(1).values) != 1).all()
+        # assert (action[:, 0] != action[:, 1]).all(), action
+        # assert ((action.max(1).values - action.min(1).values) != 1).all()
 
         # take 2-opt action
         self._step_count += 1
@@ -53,8 +55,10 @@ class TSP2OPTEnv(_BaseEnv):
 
         return (
             TSP2OPTState(
+                curr_tour=self.curr_tour.clone(),
                 curr_edge_list=self.curr_edge_list.clone(),
                 curr_tour_len=self.curr_tour_len.float() / FLOAT_SCALE,
+                best_tour=self.best_tour.clone(),
                 best_edge_list=self.best_edge_list.clone(),
                 best_tour_len=self.best_tour_len.float() / FLOAT_SCALE,
             ),
@@ -137,8 +141,10 @@ class TSP2OPTEnv(_BaseEnv):
         self.best_tour_len = self.curr_tour_len.clone()
 
         return TSP2OPTState(
+            curr_tour=self.curr_tour.clone(),
             curr_edge_list=self.curr_edge_list.clone(),
             curr_tour_len=self.curr_tour_len.float() / FLOAT_SCALE,
+            best_tour=self.best_tour.clone(),
             best_edge_list=self.best_edge_list.clone(),
             best_tour_len=self.best_tour_len.float() / FLOAT_SCALE,
         )

@@ -10,6 +10,7 @@ from torch_geometric.nn import (
     BatchNorm,
     GATConv,
     GINConv,
+    GINEConv,
     InstanceNorm,
     TransformerConv,
     global_add_pool,
@@ -107,6 +108,15 @@ class GNNEncoder(nn.Module):
         # norm_list = []
         ff_list = []
         for _ in range(self.num_layers):
+            # mlp = nn.Sequential(
+            #     nn.Linear(self.embed_dim, self.embed_dim),
+            #     self.norm_class(in_channels=self.embed_dim),
+            #     nn.ReLU(),
+            #     nn.Linear(self.embed_dim, self.embed_dim),
+            # )
+            # gnn_layer = GINEConv(
+            #     nn=mlp,
+            # )
             gnn_layer = TransformerConv(
                 in_channels=self.embed_dim,
                 out_channels=self.embed_dim // self.heads,
@@ -187,10 +197,12 @@ class TourEncoder(nn.Module):
 
         self.edge_extractor = EdgeFeatureExtractor(in_channels=self.embed_dim, edge_dim=self.embed_dim)
 
-    def forward(self, dense_x: torch.Tensor, dense_edge_index: torch.Tensor, batch: torch.Tensor, return_edge: bool = False):
+    def forward(
+        self, dense_x: torch.Tensor, dense_edge_index: torch.Tensor, batch: torch.Tensor, return_edge: bool = False
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         assert dense_x.dim() == dense_edge_index.dim()
-        assert dense_x.size(0) == dense_edge_index.size(0) # batch_size
-        assert dense_x.size(1) == dense_edge_index.size(1) # graph_size
+        assert dense_x.size(0) == dense_edge_index.size(0)  # batch_size
+        assert dense_x.size(1) == dense_edge_index.size(1)  # graph_size
         assert dense_x.size(2) == self.embed_dim
         assert dense_edge_index.size(2) == 2, f"{dense_edge_index.size()}"
 
@@ -210,16 +222,18 @@ class TourEncoder(nn.Module):
 
         for gnn in self.gnn_layer_list:
             x = gnn(x, undirected_edge_index)
+
         tour_embeddings = self.pooling_func(x, batch)
+        node_embeddings, _ = to_dense_batch(x, batch)
 
         dense_edge_embeddings = None
         if return_edge:
-            edge_embeddings = self.edge_extractor(node_x = node_x, solution_x = x, edge_index=edge_index)
+            edge_embeddings = self.edge_extractor(node_x=node_x, solution_x=x, edge_index=edge_index)
             assert edge_embeddings.dim() == 2
             assert edge_embeddings.size(0) == batch_size * graph_size
             dense_edge_embeddings = edge_embeddings.reshape(batch_size, graph_size, -1)
 
-        return tour_embeddings, dense_edge_embeddings
+        return node_embeddings, tour_embeddings, dense_edge_embeddings
 
 
 class EdgeFeatureExtractor(MessagePassing):

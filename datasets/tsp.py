@@ -5,6 +5,7 @@ from typing import Tuple, Union
 import networkx as nx
 import numpy as np
 from numpy.lib.arraysetops import isin
+from numpy.random import default_rng
 import torch
 from torch_geometric import data
 from torch_geometric.data import Data, Dataset
@@ -88,7 +89,8 @@ class TSPDataset(Dataset):
             graph_list = data["Points"]
             opt_list = data["OptDistance"]
             assert self.size <= len(graph_list)
-            ids = np.random.choice(range(len(graph_list)), self.size)
+            rng = default_rng()
+            ids = rng.choice(range(len(graph_list)), self.size, replace=False)
             for i in ids:
                 graph = self.gen_graph(node_data=graph_list[i])
                 graph.opt = torch.tensor(opt_list[i])

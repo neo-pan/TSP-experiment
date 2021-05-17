@@ -78,17 +78,13 @@ def reinforce_train_batch(
             node_embeddings, _ = model.encoder(embed_data)
         while count < args.horizon and not done:
             with amp.autocast_mode.autocast(enabled=True):
-                action, (log_probs_pts, entropies), value = model(state, node_embeddings, embed_data.batch)
-                # adapt costa_decoder outputed action to our environment
-                action[:, 0] -= 1
-                action %= args.graph_size
+                action, log_p, value = model(state, node_embeddings, embed_data.batch)
             state, reward, done, _ = env.step(action.squeeze())
             batch_reward += reward
             buffer.actions.append(action)
-            buffer.log_probs.append(log_probs_pts)
+            buffer.log_probs.append(log_p)
             buffer.rewards.append(reward)
             buffer.values.append(value)
-            buffer.entropies.append(entropies)
             count += 1
         learn_count = update_model(optimizer, scaler, buffer, state, done, epoch, count, learn_count, step, logger, args)
 
@@ -121,13 +117,13 @@ def update_model(
     values = torch.stack(buffer.values, dim=0)  # [horizon, batch_size, 1]
     advantages = (returns - values).detach()  # [horizon, batch_size, 1]
 
-    # logps = torch.stack(buffer.log_probs, dim=0)  # [horizon, batch_size, 2, graph_size]
-    # actions = torch.stack(buffer.actions, dim=0)  # [horizon, batch_size, 2, 1]
-    # log_likelihood = logps.gather(-1, actions).squeeze(-1)  # [horizon, batch_size, 2]
-    log_likelihood = torch.stack(buffer.log_probs, dim=0)
+    logps = torch.stack(buffer.log_probs, dim=0)  # [horizon, batch_size, 2, graph_size]
+    actions = torch.stack(buffer.actions, dim=0)  # [horizon, batch_size, 2, 1]
+    log_likelihood = logps.gather(-1, actions).squeeze(-1)  # [horizon, batch_size, 2]
     log_likelihood = log_likelihood.mean(2).unsqueeze(2)  # [horizon, batch_size, 1]
 
-    entropies = torch.stack(buffer.entropies, dim=0).mean(2).unsqueeze(2)  # [horizon, batch_size, 1]
+    entropies = log_p_to_entropy(logps).mean(2).unsqueeze(2)  # [horizon, batch_size, 1]
+
     wandb.log({"entropy": entropies.detach().mean().item()})
 
     p_loss = (-log_likelihood * advantages).mean()

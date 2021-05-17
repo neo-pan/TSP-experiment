@@ -49,9 +49,6 @@ def rollout(model, dataset, env, args):
             node_embeddings, _ = model.encoder(embed_data)
             while not done:
                 action, _, _ = model(state, node_embeddings, embed_data.batch)
-                # adapt costa_decoder outputed action to our environment
-                action[:, 0] -= 1
-                action %= args.graph_size
                 state, _, done, _ = env.step(action.squeeze())
 
             return state.best_tour_len.cpu()

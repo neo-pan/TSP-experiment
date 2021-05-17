@@ -5,7 +5,7 @@ import torch.nn.functional as F
 
 from typing import Any, NamedTuple, Tuple
 from torch_geometric.data import Data, Batch
-from .encoder import TourEncoder, cal_size_list, MLP, GNNEncoder
+from .encoder import TourEncoder, cal_size_list, MLP, GNNEncoder, EdgeFeatureExtractor
 from .decoder import AttentionDecoder, SimpleDecoder
 from .ActorCriticNetwork import Encoder, Decoder
 
@@ -53,17 +53,14 @@ class TSP2OPTAgent(nn.Module):
             n_rnn_layers=1,
         )
 
-        # self.curr_solution_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=False)
-        # self.best_solution_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=False)
-        # self.step_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=False)
+        self.edge_extractor = EdgeFeatureExtractor(self.embed_dim, self.embed_dim)
 
-        # self.project_edge_embeddings = nn.Linear(self.embed_dim, 3 * self.embed_dim, bias=False)
+        self.project_edge_embeddings = nn.Linear(self.embed_dim, 3 * self.embed_dim, bias=False)
+        self.step_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=False)
 
-        # self.edge_decoder = AttentionDecoder(
-        #     self.embed_dim, self.decoder_num_heads, bias=False, tanh_clipping=self.tanh_clipping
-        # )
-
-        self.dec = Decoder(self.embed_dim, self.embed_dim, 2)
+        self.edge_decoder = AttentionDecoder(
+            self.embed_dim, self.decoder_num_heads, bias=False, tanh_clipping=self.tanh_clipping
+        )
 
         self.W_star = nn.Linear(self.embed_dim, self.embed_dim // 2)
         self.W_s = nn.Linear(self.embed_dim, self.embed_dim // 2)
@@ -105,10 +102,47 @@ class TSP2OPTAgent(nn.Module):
         device = node_embeddings.device
 
         best_node = node_embeddings.gather(dim=1, index=state.best_tour.unsqueeze(-1).expand_as(node_embeddings))
-        _, s_hidden_star, _, _ = self.best_encoder(best_node)
+        s_out_star, s_hidden_star, _, _ = self.best_encoder(best_node)
+        best_solution_graph = s_out_star.sum(dim=1)
 
         curr_node = node_embeddings.gather(dim=1, index=state.curr_tour.unsqueeze(-1).expand_as(node_embeddings))
         s_out, s_hidden, _, g_embedding = self.solution_encoder(curr_node)
+        curr_solution_graph = s_out.sum(dim=1)
+
+        edge_index_offset = torch.arange(batch_size, device=device) * graph_size
+        edge_index = (
+            (state.curr_edge_list + edge_index_offset[:, None, None]).flatten(0, 1).T
+        )  # shape=[2, batch_size * graph_size]
+        node_x = node_embeddings.flatten(0, 1)
+        solution_x = torch.empty_like(s_out).scatter(
+            dim=1, index=state.curr_tour.unsqueeze(-1).expand_as(node_embeddings), src=s_out
+        ).flatten(0, 1)
+        edge_embeddings = self.edge_extractor(node_x=node_x, solution_x=solution_x, edge_index=edge_index)
+        assert edge_embeddings.dim() == 2
+        assert edge_embeddings.size(0) == batch_size * graph_size
+        dense_edge_embeddings = edge_embeddings.reshape(batch_size, graph_size, -1)
+        curr_solution_edge = dense_edge_embeddings
+
+        glimpse_K, glimpse_V, logit_K = self.project_edge_embeddings(curr_solution_edge).chunk(3, dim=-1)
+        glimpse_K = glimpse_K.permute(1, 0, 2).contiguous()  # (num_edges, batch_size, embed_dim)
+        glimpse_V = glimpse_V.permute(1, 0, 2).contiguous()  # (num_edges, batch_size, embed_dim)
+        logit_K = logit_K.contiguous()  # ((batch_size, num_edges, embed_dim))
+
+        mask = torch.zeros((batch_size, 1, graph_size), dtype=torch.bool, device=device)
+        # select first edge to remove in 2-opt
+        query1 = self._make_query(best_solution_graph, curr_solution_graph, curr_solution_edge)
+        log_p1 = self.edge_decoder(query1, glimpse_K, glimpse_V, logit_K)
+        selected1 = self._select_edge(log_p1, mask.squeeze())
+        # update mask
+        forbid = torch.stack([selected1, selected1 + 1, selected1 - 1], dim=2).detach() % graph_size
+        mask.scatter_(dim=-1, index=forbid, value=1)
+        # select second edge to remove in 2-opt
+        query2 = self._make_query(best_solution_graph, curr_solution_graph, curr_solution_edge, selected1)
+        log_p2 = self.edge_decoder(query2, glimpse_K, glimpse_V, logit_K, mask)
+        selected2 = self._select_edge(log_p2, mask.squeeze())
+
+        log_p = torch.stack([log_p1, log_p2], dim=1)  # shape=[batch_size, 2, graph_size]
+        selected = torch.stack([selected1, selected2], dim=1)  # shape=[batch_size, 2, 1]
 
         enc_h = (s_hidden[0][-1], s_hidden[1][-1])
         enc_h_star = (s_hidden_star[0][-1], s_hidden_star[1][-1])
@@ -117,11 +151,7 @@ class TSP2OPTAgent(nn.Module):
         h_v = torch.cat([self.W_star(enc_h_star[0]), self.W_s(enc_h[0])], dim=1)
         values = self.value_decoder(v_g + h_v)
 
-        probs, pointers, log_probs_pts, entropies = self.dec(
-            enc_h, s_out, s_out, actions=None, g_emb=g_embedding, q_star=enc_h_star
-        )
-
-        return pointers, (log_probs_pts, entropies), values
+        return selected, log_p, values
 
     def _make_query(
         self,

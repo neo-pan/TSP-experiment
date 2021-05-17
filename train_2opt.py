@@ -49,9 +49,6 @@ def rollout(model, dataset, env, args):
             node_embeddings, _ = model.encoder(embed_data)
             while not done:
                 action, _, _ = model(state, node_embeddings, embed_data.batch)
-                # adapt costa_decoder outputed action to our environment
-                action[:, 0] -= 1
-                action %= args.graph_size
                 state, _, done, _ = env.step(action.squeeze())
 
             return state.best_tour_len.cpu()
@@ -125,8 +122,10 @@ if __name__ == "__main__":
     else:
         learn_count = 0
         for epoch in range(args.epoch_start, args.epoch_start + args.n_epochs):
-            # if epoch == 100:
-            #     args.horizon = 10
+            # ! temp change here
+            if epoch == 200:
+                args.horizon = 20
+            # !
             print(
                 "Start train epoch {}, lr={} for run {}".format(epoch, optimizer.param_groups[0]["lr"], args.run_name)
             )

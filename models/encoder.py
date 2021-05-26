@@ -10,6 +10,7 @@ from torch_geometric.nn import (
     BatchNorm,
     GATConv,
     GINConv,
+    GatedGraphConv,
     InstanceNorm,
     TransformerConv,
     global_add_pool,
@@ -172,18 +173,8 @@ class TourEncoder(nn.Module):
         assert (self.embed_dim % self.heads) == 0
         self.pooling_func = get_pooling_func(pooling_method)
         self.norm_class = get_normalization_class(normalization)
-        gnn_layer_list = []
-        for _ in range(self.num_layers):
-            mlp = nn.Sequential(
-                nn.Linear(self.embed_dim, self.embed_dim),
-                self.norm_class(in_channels=self.embed_dim),
-                nn.ReLU(),
-                nn.Linear(self.embed_dim, self.embed_dim),
-            )
-            gnn_layer = GINConv(nn=mlp)
-            gnn_layer_list.append(gnn_layer)
-
-        self.gnn_layer_list = nn.ModuleList(gnn_layer_list)
+        
+        self.recurrent_gnn = GatedGraphConv(out_channels=self.embed_dim, num_layers=1)
 
         self.edge_extractor = EdgeFeatureExtractor(in_channels=self.embed_dim, edge_dim=self.embed_dim)
 
@@ -208,8 +199,8 @@ class TourEncoder(nn.Module):
         undirected_edge_index = torch.cat([edge_index, edge_index.flipud()], dim=1)
         assert is_undirected(undirected_edge_index, num_nodes=batch_size * graph_size)
 
-        for gnn in self.gnn_layer_list:
-            x = gnn(x, undirected_edge_index)
+        for _ in range(self.num_layers):
+            x = self.recurrent_gnn(x, undirected_edge_index)
         tour_embeddings = self.pooling_func(x, batch)
 
         dense_edge_embeddings = None

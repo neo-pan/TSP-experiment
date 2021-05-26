@@ -120,6 +120,8 @@ if __name__ == "__main__":
             + sty.fg.rs
         )
     else:
+        val_best_len = float("inf")
+        val_best_gap = float("inf")
         learn_count = 0
         for epoch in range(args.epoch_start, args.epoch_start + args.n_epochs):
             # if epoch == 100:
@@ -162,12 +164,15 @@ if __name__ == "__main__":
                 )
 
             avg_len = validate(model, val_dataset, env, args)
+            val_best_len = min(val_best_len, avg_len)
             opt = sum([g.opt for g in val_dataset]) / len(val_dataset)
             opt_gap = (avg_len - opt) / opt
+            val_best_gap = min(val_best_gap, opt_gap)
             print(
-            sty.fg.green
-            + f"Validation, average len: {avg_len:.3f}, opt len:{opt:.3f}, gap: {opt_gap*100:.3f}%"
-            + sty.fg.rs
+                sty.fg.green
+                + f"Validation, average len: {avg_len:.3f}, opt len:{opt:.3f}, gap: {opt_gap*100:.3f}%\n"
+                + f"Best validation result: {val_best_len:.3f} {val_best_gap*100:.3f}%"
+                + sty.fg.rs
             )
             tb_logger.add_scalar("tour_len_val", avg_len, step)
             tb_logger.add_scalar("gap_val", opt_gap, step)

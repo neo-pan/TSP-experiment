@@ -17,6 +17,7 @@ class TSP2OPTAgent(nn.Module):
         self.edge_dim = args.edge_dim
         self.embed_dim = args.embed_dim
         self.num_gnn_layers = args.num_gnn_layers
+        self.tour_gnn_layers = args.tour_gnn_layers
         self.encoder_num_heads = args.encoder_num_heads
         self.decoder_num_heads = args.decoder_num_heads
         self.bias = args.bias
@@ -38,7 +39,7 @@ class TSP2OPTAgent(nn.Module):
 
         self.solution_encoder = TourEncoder(
             self.embed_dim,
-            args.tour_gnn_layers,
+            self.tour_gnn_layers,
             self.encoder_num_heads,
             self.normalization,
             pooling_method=args.tour_pooling_method,

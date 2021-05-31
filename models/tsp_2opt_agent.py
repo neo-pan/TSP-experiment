@@ -5,9 +5,10 @@ import torch.nn.functional as F
 
 from typing import Any, NamedTuple, Tuple
 from torch_geometric.data import Data, Batch
-from .encoder import TourEncoder, cal_size_list, MLP, GNNEncoder, EdgeFeatureExtractor
+from .encoder import TourEncoder, cal_size_list, MLP, GNNEncoder, EdgeFeatureExtractor, GcnEncoder
 from .decoder import AttentionDecoder, SimpleDecoder
 from .ActorCriticNetwork import Encoder, Decoder
+
 
 
 class TSP2OPTAgent(nn.Module):
@@ -26,34 +27,29 @@ class TSP2OPTAgent(nn.Module):
         self.normalization = args.normalization
         self.set_decode_type(args.decode_type)
 
-        self.node_embedder = nn.Linear(self.node_dim, self.embed_dim)
-        self.edge_embedder = nn.Linear(self.edge_dim, self.embed_dim)
+        self.node_embedder = nn.Identity()
+        self.edge_embedder = nn.Identity()
 
-        self.encoder = GNNEncoder(
+        self.encoder = GcnEncoder(
+            input_dim=self.node_dim,
+            hidden_dim=self.embed_dim
+        )
+
+        self.solution_encoder = TourEncoder(
             self.embed_dim,
-            self.num_gnn_layers,
+            args.tour_gnn_layers,
             self.encoder_num_heads,
             self.normalization,
-            pooling_method=self.pooling_method,
+            pooling_method=args.tour_pooling_method,
         )
 
-        self.solution_encoder = Encoder(
-            input_dim=self.embed_dim,
-            embedding_dim=self.embed_dim,
-            hidden_dim=self.embed_dim,
-            n_nodes=args.graph_size,
-            n_rnn_layers=1,
+        self.best_encoder = TourEncoder(
+            self.embed_dim,
+            args.tour_gnn_layers,
+            self.encoder_num_heads,
+            self.normalization,
+            pooling_method=args.tour_pooling_method,
         )
-
-        self.best_encoder = Encoder(
-            input_dim=self.embed_dim,
-            embedding_dim=self.embed_dim,
-            hidden_dim=self.embed_dim,
-            n_nodes=args.graph_size,
-            n_rnn_layers=1,
-        )
-
-        self.edge_extractor = EdgeFeatureExtractor(self.embed_dim, self.embed_dim)
 
         self.project_edge_embeddings = nn.Linear(self.embed_dim, 3 * self.embed_dim, bias=False)
         self.step_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=False)
@@ -66,7 +62,7 @@ class TSP2OPTAgent(nn.Module):
         self.W_s = nn.Linear(self.embed_dim, self.embed_dim // 2)
 
         self.value_decoder = nn.Sequential(
-            nn.Linear(self.embed_dim, self.embed_dim),
+            nn.Linear(self.embed_dim * 2, self.embed_dim),
             nn.BatchNorm1d(self.embed_dim),
             nn.ReLU(),
             nn.Linear(self.embed_dim, 1),
@@ -101,27 +97,10 @@ class TSP2OPTAgent(nn.Module):
         assert embed_dim == self.embed_dim
         device = node_embeddings.device
 
-        best_node = node_embeddings.gather(dim=1, index=state.best_tour.unsqueeze(-1).expand_as(node_embeddings))
-        s_out_star, s_hidden_star, _, _ = self.best_encoder(best_node)
-        best_solution_graph = s_out_star.sum(dim=1)
-
-        curr_node = node_embeddings.gather(dim=1, index=state.curr_tour.unsqueeze(-1).expand_as(node_embeddings))
-        s_out, s_hidden, _, g_embedding = self.solution_encoder(curr_node)
-        curr_solution_graph = s_out.sum(dim=1)
-
-        edge_index_offset = torch.arange(batch_size, device=device) * graph_size
-        edge_index = (
-            (state.curr_edge_list + edge_index_offset[:, None, None]).flatten(0, 1).T
-        )  # shape=[2, batch_size * graph_size]
-        node_x = node_embeddings.flatten(0, 1)
-        solution_x = torch.empty_like(s_out).scatter(
-            dim=1, index=state.curr_tour.unsqueeze(-1).expand_as(node_embeddings), src=s_out
-        ).flatten(0, 1)
-        edge_embeddings = self.edge_extractor(node_x=node_x, solution_x=solution_x, edge_index=edge_index)
-        assert edge_embeddings.dim() == 2
-        assert edge_embeddings.size(0) == batch_size * graph_size
-        dense_edge_embeddings = edge_embeddings.reshape(batch_size, graph_size, -1)
-        curr_solution_edge = dense_edge_embeddings
+        best_solution_graph, _ = self.best_encoder(node_embeddings, state.best_edge_list, batch, return_edge=False)
+        curr_solution_graph, curr_solution_edge = self.solution_encoder(
+            node_embeddings, state.curr_edge_list, batch, return_edge=True
+        )
 
         glimpse_K, glimpse_V, logit_K = self.project_edge_embeddings(curr_solution_edge).chunk(3, dim=-1)
         glimpse_K = glimpse_K.permute(1, 0, 2).contiguous()  # (num_edges, batch_size, embed_dim)
@@ -144,12 +123,7 @@ class TSP2OPTAgent(nn.Module):
         log_p = torch.stack([log_p1, log_p2], dim=1)  # shape=[batch_size, 2, graph_size]
         selected = torch.stack([selected1, selected2], dim=1)  # shape=[batch_size, 2, 1]
 
-        enc_h = (s_hidden[0][-1], s_hidden[1][-1])
-        enc_h_star = (s_hidden_star[0][-1], s_hidden_star[1][-1])
-
-        v_g = torch.mean(g_embedding, dim=1).squeeze(1)
-        h_v = torch.cat([self.W_star(enc_h_star[0]), self.W_s(enc_h[0])], dim=1)
-        values = self.value_decoder(v_g + h_v)
+        values = self.value_decoder(torch.cat([best_solution_graph, curr_solution_graph], dim=-1))
 
         return selected, log_p, values
 

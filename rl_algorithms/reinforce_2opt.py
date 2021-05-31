@@ -124,7 +124,6 @@ def update_model(
     log_likelihood = log_likelihood.mean(2).unsqueeze(2)  # [horizon, batch_size, 1]
 
     entropies = log_p_to_entropy(logps).mean(2).unsqueeze(2)  # [horizon, batch_size, 1]
-    wandb.log({"entropy": entropies.detach().mean().item()})
 
     p_loss = (-log_likelihood * advantages).mean()
     v_loss = args.value_beta * (returns - values).pow(2).mean()
@@ -154,6 +153,7 @@ def update_model(
         loss=loss,
         returns=returns.mean(),
         value=values.mean(),
+        entropy=entropies.detach().mean(),
         logger=logger,
         args=args,
     )
@@ -196,6 +196,7 @@ def log_values(
     loss,
     returns,
     value,
+    entropy,
     logger: SummaryWriter,
     args,
 ):
@@ -226,5 +227,6 @@ def log_values(
             "loss_policy": p_loss.item(),
             "loss_baseline": v_loss.item(),
             "loss_entropy": e_loss.item(),
+            "entropy":entropy.item(),
         }
     )

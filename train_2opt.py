@@ -123,6 +123,8 @@ if __name__ == "__main__":
         learn_count = 0
         for epoch in range(args.epoch_start, args.epoch_start + args.n_epochs):
             # ! temp change here
+            if epoch == 100:
+                args.horizon = 10
             if epoch == 200:
                 args.horizon = 20
             # !
@@ -171,9 +173,9 @@ if __name__ == "__main__":
             + f"Validation, average len: {avg_len:.3f}, opt len:{opt:.3f}, gap: {opt_gap*100:.3f}%"
             + sty.fg.rs
             )
-            tb_logger.add_scalar("tour_len_val", avg_len, step)
-            tb_logger.add_scalar("gap_val", opt_gap, step)
-            wandb.log({"tour_len_val": avg_len, "gap_val": opt_gap})
+            tb_logger.add_scalar("tour_len_val", avg_len, epoch)
+            tb_logger.add_scalar("gap_val", opt_gap, epoch)
+            wandb.log({"tour_len_val": avg_len, "gap_val": opt_gap, "epoch": epoch})
 
             # lr_scheduler should be called at end of epoch
             lr_scheduler.step()

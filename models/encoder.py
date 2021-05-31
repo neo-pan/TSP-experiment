@@ -11,6 +11,7 @@ from torch_geometric.nn import (
     GATConv,
     GINConv,
     GINEConv,
+    GatedGraphConv,
     InstanceNorm,
     TransformerConv,
     global_add_pool,
@@ -165,6 +166,47 @@ class GNNEncoder(nn.Module):
         return (node_embeddings, graph_feat)
 
 
+class GcnEncoder(nn.Module):
+    def __init__(self, input_dim, hidden_dim) -> None:
+        super().__init__()
+
+        self.input_dim = input_dim
+        self.hidden_dim = hidden_dim
+
+        self.embedding = nn.Linear(input_dim, hidden_dim)
+
+        self.g_embedding = nn.Linear(hidden_dim, hidden_dim)
+        self.g_embedding1 = nn.Linear(hidden_dim, hidden_dim)
+        self.g_embedding2 = nn.Linear(hidden_dim, hidden_dim)
+
+        self.norm = BatchNorm(in_channels=hidden_dim)
+
+
+        self.nn = nn.Identity()
+
+    def forward(self, data: Batch) -> Tuple[torch.Tensor, torch.Tensor]:
+
+        x = data.x
+        dense_x, dense_mask = to_dense_batch(x, data.batch)
+
+        edges = torch.cdist(dense_x, dense_x, p=2.0)
+
+        embedded_input = self.embedding(dense_x)
+
+        batch_size, graph_size, embed_dim = embedded_input.size()
+
+        g_embedding = embedded_input \
+            + F.relu(torch.bmm(edges, self.g_embedding(embedded_input)))
+        g_embedding = g_embedding \
+            + F.relu(torch.bmm(edges, self.g_embedding1(g_embedding)))
+        g_embedding = g_embedding \
+            + F.relu(torch.bmm(edges, self.g_embedding2(g_embedding)))
+
+        g_embedding = self.norm(g_embedding.view(-1, embed_dim)).view(batch_size, graph_size, -1)
+
+        return (g_embedding, None)
+
+
 class TourEncoder(nn.Module):
     def __init__(
         self,
@@ -182,18 +224,9 @@ class TourEncoder(nn.Module):
         assert (self.embed_dim % self.heads) == 0
         self.pooling_func = get_pooling_func(pooling_method)
         self.norm_class = get_normalization_class(normalization)
-        gnn_layer_list = []
-        for _ in range(self.num_layers):
-            mlp = nn.Sequential(
-                nn.Linear(self.embed_dim, self.embed_dim),
-                self.norm_class(in_channels=self.embed_dim),
-                nn.ReLU(),
-                nn.Linear(self.embed_dim, self.embed_dim),
-            )
-            gnn_layer = GINConv(nn=mlp)
-            gnn_layer_list.append(gnn_layer)
-
-        self.gnn_layer_list = nn.ModuleList(gnn_layer_list)
+        
+        self.gnn_layer = GatedGraphConv(out_channels=self.embed_dim, num_layers=1)
+        self.reversed_gnn_layer = GatedGraphConv(out_channels=self.embed_dim, num_layers=1)
 
         self.edge_extractor = EdgeFeatureExtractor(in_channels=self.embed_dim, edge_dim=self.embed_dim)
 
@@ -217,14 +250,17 @@ class TourEncoder(nn.Module):
         edge_index = (
             (dense_edge_index + edge_index_offset[:, None, None]).flatten(0, 1).T
         )  # shape=[2, batch_size * graph_size]
-        undirected_edge_index = torch.cat([edge_index, edge_index.flipud()], dim=1)
-        assert is_undirected(undirected_edge_index, num_nodes=batch_size * graph_size)
+        reversed_edge_index = edge_index.flipud()
 
-        for gnn in self.gnn_layer_list:
-            x = gnn(x, undirected_edge_index)
+        x_dir_0 = x
+        x_dir_1 = x
+        for _ in range(self.num_layers):
+            x_dir_0 = checkpoint(self.gnn_layer, x_dir_0, edge_index)
+            x_dir_1 = checkpoint(self.reversed_gnn_layer, x_dir_1, reversed_edge_index)
+
+        x = x_dir_0 + x_dir_1
 
         tour_embeddings = self.pooling_func(x, batch)
-        node_embeddings, _ = to_dense_batch(x, batch)
 
         dense_edge_embeddings = None
         if return_edge:
@@ -233,7 +269,7 @@ class TourEncoder(nn.Module):
             assert edge_embeddings.size(0) == batch_size * graph_size
             dense_edge_embeddings = edge_embeddings.reshape(batch_size, graph_size, -1)
 
-        return node_embeddings, tour_embeddings, dense_edge_embeddings
+        return tour_embeddings, dense_edge_embeddings
 
 
 class EdgeFeatureExtractor(MessagePassing):

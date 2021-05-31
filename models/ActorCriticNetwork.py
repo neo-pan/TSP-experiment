@@ -73,8 +73,8 @@ class Encoder(nn.Module):
 
         batch_size = input.size(0)
 
-        # edges = utils.batch_pair_squared_dist(input, input)
-        # edges.requires_grad = False
+        edges = utils.batch_pair_squared_dist(input, input)
+        edges.requires_grad = False
 
         # embedding shared across all nodes
         embedded_input = self.embedding(input)
@@ -94,12 +94,12 @@ class Encoder(nn.Module):
             h0 = h0.unsqueeze(0).repeat(self.n_rnn_layers, 1, 1)
             c0 = c0.unsqueeze(0).repeat(self.n_rnn_layers, 1, 1)
 
-        g_embedding = embedded_input # \
-        #     + F.relu(torch.bmm(edges, self.g_embedding(embedded_input)))
-        # g_embedding = g_embedding \
-        #     + F.relu(torch.bmm(edges, self.g_embedding1(g_embedding)))
-        # g_embedding = g_embedding \
-        #     + F.relu(torch.bmm(edges, self.g_embedding2(g_embedding)))
+        g_embedding = embedded_input \
+            + F.relu(torch.bmm(edges, self.g_embedding(embedded_input)))
+        g_embedding = g_embedding \
+            + F.relu(torch.bmm(edges, self.g_embedding1(g_embedding)))
+        g_embedding = g_embedding \
+            + F.relu(torch.bmm(edges, self.g_embedding2(g_embedding)))
 
         rnn_input = g_embedding
         rnn_input_reversed = torch.flip(g_embedding, [1])

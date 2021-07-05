@@ -1,6 +1,7 @@
 import os
 import os.path as osp
 from typing import Tuple, Union
+from functools import partial
 
 import networkx as nx
 import numpy as np
@@ -56,10 +57,16 @@ def gen_complete_graph(node_data: Union[int, torch.Tensor], pos_feature: bool = 
     return graph
 
 
-graph_gen_func = {
-    "complete": gen_complete_graph,
-    "knn": gen_knn_graph,
-}
+def get_graph_gen_func(graph_type: str, **kwargs):
+    graph_gen_func = {
+        "complete": gen_complete_graph,
+        "knn": gen_knn_graph,
+    }
+    if graph_type == "knn":
+        k = kwargs.get("graph_knn")
+        assert k is not None
+        return partial(gen_knn_graph, k=k)
+    return graph_gen_func.get(graph_type)
 
 
 class TSPDataset(Dataset):
@@ -73,6 +80,7 @@ class TSPDataset(Dataset):
         transform=None,
         pre_filter=None,
         load_path: str = None,
+        **kwargs,
     ):
         self.size, self.train_flag = size, train_flag
         self.graph_size = graph_size
@@ -81,7 +89,7 @@ class TSPDataset(Dataset):
         self.load_path = load_path
         self.classification_flag = False
         self.data_list = None
-        self.gen_graph = graph_gen_func.get(self.graph_type, None)
+        self.gen_graph = get_graph_gen_func(self.graph_type, **kwargs)
         assert self.gen_graph, f"Wrong graph type: {self.graph_type}"
         if self.load_path:
             self.data_list = []

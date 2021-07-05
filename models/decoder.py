@@ -2,6 +2,8 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.cuda.amp as amp
+import wandb
 
 
 class AttentionDecoder(nn.Module):
@@ -86,7 +88,7 @@ class AttentionDecoder(nn.Module):
 
         if attn_mask is not None:
             assert attn_mask.dtype == torch.bool
-            compatibility.masked_fill_(heads_mask, -math.inf)
+            compatibility.masked_fill_(heads_mask, torch.finfo(compatibility.dtype).min)
 
         heads = torch.matmul(torch.softmax(compatibility, dim=-1), glimpse_V)
         assert list(heads.size()) == [num_heads, bsz, tgt_len, head_dim]
@@ -102,10 +104,21 @@ class AttentionDecoder(nn.Module):
             logits = torch.tanh(logits) * self.tanh_clipping
         if attn_mask is not None:
             assert attn_mask.dtype == torch.bool
-            logits.masked_fill_(attn_mask, -math.inf)
+            logits.masked_fill_(attn_mask, torch.finfo(logits.dtype).min)
 
         log_prob = F.log_softmax(logits, dim=-1)
-        assert not torch.isnan(log_prob).any()
+        if torch.isnan(log_prob).any():
+            torch.save(
+                {
+                "glimpse_Q": glimpse_Q,
+                "glimpse_K": glimpse_K,
+                "glimpse_V": glimpse_V,
+                "compatibility": compatibility,
+                "heads": heads,
+                "final_Q": final_Q,
+                "logits": logits,
+                }, "nan-tensor.pt")
+            assert not torch.isnan(log_prob).any()
 
         return log_prob.squeeze(1)
 

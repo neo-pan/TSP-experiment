@@ -103,15 +103,25 @@ if __name__ == "__main__":
         torch.set_rng_state(load_data["rng_state"])
         if args.device is torch.device("cuda"):
             torch.cuda.set_rng_state_all(load_data["cuda_rng_state"])
-    if args.load_path:
-        epoch_resume = int(os.path.splitext(os.path.split(args.load_path)[-1])[0].split("-")[1])
+        epoch_resume = load_data["epoch"]
         args.epoch_start = epoch_resume + 1
+        del load_data
+
     val_dataset = TSPDataset(
-        size=args.val_size, graph_size=args.graph_size, graph_type=args.graph_type, load_path=args.val_dataset
+        size=args.val_size,
+        graph_size=args.graph_size,
+        graph_type=args.graph_type,
+        load_path=args.val_dataset,
+        graph_knn=args.graph_knn,
     )
 
     if args.eval_only:
+        import timeit
+
+        time_start = timeit.default_timer()
         avg_len = validate(model, val_dataset, env, args)
+        time_end = timeit.default_timer()
+        print("totally cost", time_end - time_start, "s")
         opt = sum([g.opt for g in val_dataset]) / len(val_dataset)
         opt_gap = (avg_len - opt) / opt
         print(
@@ -124,8 +134,18 @@ if __name__ == "__main__":
         val_best_gap = float("inf")
         learn_count = 0
         for epoch in range(args.epoch_start, args.epoch_start + args.n_epochs):
-            # if epoch == 100:
-            #     args.horizon = 10
+            ######## temp change #########
+            if args.graph_size == 50:
+                if epoch == 100:
+                    args.horizon = 10
+                if epoch == 200:
+                    args.horizon = 20
+            elif args.graph_size == 100:
+                if epoch == 100:
+                    args.horizon = 8
+                if epoch == 200:
+                    args.horizon = 10
+            ##############################
             print(
                 "Start train epoch {}, lr={} for run {}".format(epoch, optimizer.param_groups[0]["lr"], args.run_name)
             )
@@ -137,6 +157,7 @@ if __name__ == "__main__":
                 graph_size=args.graph_size,
                 graph_type=args.graph_type,
                 load_path=args.train_dataset,
+                graph_knn=args.graph_knn,
             )
             training_dataloader = DataLoader(training_dataset, batch_size=args.batch_size, num_workers=args.num_workers)
 
@@ -152,31 +173,45 @@ if __name__ == "__main__":
             print("Finished epoch {}, took {} s".format(epoch, time.strftime("%H:%M:%S", time.gmtime(epoch_duration))))
 
             if (args.checkpoint_epochs != 0 and epoch % args.checkpoint_epochs == 0) or epoch == args.n_epochs - 1:
-                print("Saving model and state...")
+                print(f"epoch: {epoch}, Saving model and state...")
                 torch.save(
                     {
                         "model": model.state_dict(),
                         "optimizer": optimizer.state_dict(),
                         "rng_state": torch.get_rng_state(),
                         "cuda_rng_state": torch.cuda.get_rng_state_all(),
+                        "epoch": epoch,
                     },
-                    os.path.join(args.save_dir, "epoch-{}.pt".format(epoch)),
+                    os.path.join(args.save_dir, "latest-model.pt"),
                 )
 
             avg_len = validate(model, val_dataset, env, args)
             val_best_len = min(val_best_len, avg_len)
             opt = sum([g.opt for g in val_dataset]) / len(val_dataset)
             opt_gap = (avg_len - opt) / opt
+            if opt_gap < val_best_gap:
+                print(f"epoch: {epoch}, Saving best model and state...")
+                torch.save(
+                    {
+                        "model": model.state_dict(),
+                        "optimizer": optimizer.state_dict(),
+                        "rng_state": torch.get_rng_state(),
+                        "cuda_rng_state": torch.cuda.get_rng_state_all(),
+                        "epoch": epoch,
+                    },
+                    os.path.join(args.save_dir, "best-model.pt"),
+                )
             val_best_gap = min(val_best_gap, opt_gap)
             print(
                 sty.fg.green
                 + f"Validation, average len: {avg_len:.3f}, opt len:{opt:.3f}, gap: {opt_gap*100:.3f}%\n"
+                + sty.fg.red
                 + f"Best validation result: {val_best_len:.3f} {val_best_gap*100:.3f}%"
                 + sty.fg.rs
             )
-            tb_logger.add_scalar("tour_len_val", avg_len, step)
-            tb_logger.add_scalar("gap_val", opt_gap, step)
-            wandb.log({"tour_len_val": avg_len, "gap_val": opt_gap})
+            tb_logger.add_scalar("tour_len_val", avg_len, epoch)
+            tb_logger.add_scalar("gap_val", opt_gap, epoch)
+            wandb.log({"tour_len_val": avg_len, "gap_val": opt_gap, "epoch": epoch})
 
             # lr_scheduler should be called at end of epoch
             lr_scheduler.step()

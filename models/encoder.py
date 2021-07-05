@@ -7,12 +7,15 @@ import torch.nn.functional as F
 from torch_geometric.data import Data
 from torch_geometric.data.batch import Batch
 from torch_geometric.nn import (
-    BatchNorm,
+    Sequential,
     GATConv,
+    GATv2Conv,
     GINConv,
     GatedGraphConv,
-    InstanceNorm,
     TransformerConv,
+    BatchNorm,
+    InstanceNorm,
+    GraphNorm,
     global_add_pool,
     global_max_pool,
     global_mean_pool,
@@ -115,11 +118,14 @@ class GNNEncoder(nn.Module):
                 edge_dim=self.embed_dim,
             )
             gnn_layer_list.append(gnn_layer)
-            feed_forward = nn.Sequential(
-                nn.Linear(self.embed_dim, feed_forward_hidden),
-                self.norm_class(in_channels=feed_forward_hidden),
-                nn.ReLU(),
-                nn.Linear(feed_forward_hidden, self.embed_dim),
+            feed_forward = Sequential(
+                "x, batch",
+                [
+                    (nn.Linear(self.embed_dim, feed_forward_hidden), "x -> x"),
+                    nn.ReLU(),
+                    (GraphNorm(in_channels=feed_forward_hidden), "x, batch -> x"),
+                    nn.Linear(feed_forward_hidden, self.embed_dim),
+                ],
             )
             ff_list.append(feed_forward)
 
@@ -142,10 +148,11 @@ class GNNEncoder(nn.Module):
         x = data.x
         edge_index = data.edge_index
         edge_attr = data.edge_attr
+        batch = data.batch
 
         for gnn_layer, ff in zip(self.gnn_layer_list, self.ff_list):
-            x = gnn_layer(x, edge_index, edge_attr)
-            x = ff(x)
+            x = checkpoint(gnn_layer, x, edge_index, edge_attr)
+            x = checkpoint(ff, x, batch)
 
         node_embeddings, dense_mask = to_dense_batch(x, data.batch)
         assert dense_mask.all(), "For now only support a batch of graphs with the same number of nodes"
@@ -173,15 +180,18 @@ class TourEncoder(nn.Module):
         assert (self.embed_dim % self.heads) == 0
         self.pooling_func = get_pooling_func(pooling_method)
         self.norm_class = get_normalization_class(normalization)
-        
-        self.recurrent_gnn = GatedGraphConv(out_channels=self.embed_dim, num_layers=1)
+        self.norm_out = GraphNorm(self.embed_dim)
+        self.gnn_layer = GatedGraphConv(out_channels=self.embed_dim, num_layers=1)
+        self.reversed_gnn_layer = GatedGraphConv(out_channels=self.embed_dim, num_layers=1)
 
         self.edge_extractor = EdgeFeatureExtractor(in_channels=self.embed_dim, edge_dim=self.embed_dim)
 
-    def forward(self, dense_x: torch.Tensor, dense_edge_index: torch.Tensor, batch: torch.Tensor, return_edge: bool = False):
+    def forward(
+        self, dense_x: torch.Tensor, dense_edge_index: torch.Tensor, batch: torch.Tensor, return_edge: bool = False
+    ):
         assert dense_x.dim() == dense_edge_index.dim()
-        assert dense_x.size(0) == dense_edge_index.size(0) # batch_size
-        assert dense_x.size(1) == dense_edge_index.size(1) # graph_size
+        assert dense_x.size(0) == dense_edge_index.size(0)  # batch_size
+        assert dense_x.size(1) == dense_edge_index.size(1)  # graph_size
         assert dense_x.size(2) == self.embed_dim
         assert dense_edge_index.size(2) == 2, f"{dense_edge_index.size()}"
 
@@ -196,16 +206,20 @@ class TourEncoder(nn.Module):
         edge_index = (
             (dense_edge_index + edge_index_offset[:, None, None]).flatten(0, 1).T
         )  # shape=[2, batch_size * graph_size]
-        undirected_edge_index = torch.cat([edge_index, edge_index.flipud()], dim=1)
-        assert is_undirected(undirected_edge_index, num_nodes=batch_size * graph_size)
+        reversed_edge_index = edge_index.flipud()
 
+        x_dir_0 = x
+        x_dir_1 = x
         for _ in range(self.num_layers):
-            x = self.recurrent_gnn(x, undirected_edge_index)
+            x_dir_0 = checkpoint(self.gnn_layer, x_dir_0, edge_index)
+            x_dir_1 = checkpoint(self.reversed_gnn_layer, x_dir_1, reversed_edge_index)
+        x = F.relu(x_dir_0 + x_dir_1)
+        x = self.norm_out(x, batch)
         tour_embeddings = self.pooling_func(x, batch)
 
         dense_edge_embeddings = None
         if return_edge:
-            edge_embeddings = self.edge_extractor(node_x = node_x, solution_x = x, edge_index=edge_index)
+            edge_embeddings = self.edge_extractor(node_x=node_x, solution_x=x, edge_index=edge_index, batch=batch)
             assert edge_embeddings.dim() == 2
             assert edge_embeddings.size(0) == batch_size * graph_size
             dense_edge_embeddings = edge_embeddings.reshape(batch_size, graph_size, -1)
@@ -233,10 +247,11 @@ class EdgeFeatureExtractor(MessagePassing):
         # self.x_j_lin = nn.Linear(self.in_channels, self.edge_dim, self.bias)
         self.edge_lin = nn.Linear(self.edge_dim, self.edge_dim, self.bias)
 
-        self.norm_x = nn.BatchNorm1d(self.in_channels)
-        self.norm_edge = nn.BatchNorm1d(self.edge_dim)
+        self.norm_x = GraphNorm(self.in_channels)
+        self.norm_edge = GraphNorm(self.edge_dim)
 
         self._edge = None
+        self._batch = None
 
         self.reset_parameters()
 
@@ -247,7 +262,7 @@ class EdgeFeatureExtractor(MessagePassing):
         # self.x_j_lin.reset_parameters()
         self.edge_lin.reset_parameters()
 
-    def forward(self, node_x: torch.Tensor, solution_x: torch.Tensor, edge_index: torch.Tensor):
+    def forward(self, node_x: torch.Tensor, solution_x: torch.Tensor, edge_index: torch.Tensor, batch):
 
         assert node_x.size() == solution_x.size()
         num_nodes, _ = node_x.size()
@@ -257,9 +272,12 @@ class EdgeFeatureExtractor(MessagePassing):
         node_x = self.node_lin(node_x)
         solution_x = self.solution_lin(solution_x)
 
-        x = self.norm_x(node_x + solution_x)
-        x = F.relu(x)
+        # x = self.norm_x(node_x + solution_x, batch)
+        # x = F.relu(x)
+        x = F.relu(node_x+solution_x)
+        x = self.norm_x(x, batch)
 
+        self._batch = batch
         self.propagate(edge_index, x=x, size=None)
 
         edge_embedding = self._edge
@@ -272,9 +290,10 @@ class EdgeFeatureExtractor(MessagePassing):
         edge_embedding = x_i + x_j  # self.x_i_lin(x_i) + self.x_j_lin(x_j)
 
         edge_embedding = self.edge_lin(edge_embedding)
-        edge_embedding = self.norm_edge(edge_embedding)
         edge_embedding = F.relu(edge_embedding)
+        edge_embedding = self.norm_edge(edge_embedding, self._batch)
 
+        self._batch = None
         self._edge = edge_embedding
 
         return x_i

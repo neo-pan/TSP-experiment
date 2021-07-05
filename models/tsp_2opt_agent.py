@@ -37,7 +37,15 @@ class TSP2OPTAgent(nn.Module):
             pooling_method=self.pooling_method,
         )
 
-        self.solution_encoder = TourEncoder(
+        self.curr_solution_encoder = TourEncoder(
+            self.embed_dim,
+            self.tour_gnn_layers,
+            self.encoder_num_heads,
+            self.normalization,
+            pooling_method=args.tour_pooling_method,
+        )
+
+        self.best_solution_encoder = TourEncoder(
             self.embed_dim,
             self.tour_gnn_layers,
             self.encoder_num_heads,
@@ -57,9 +65,9 @@ class TSP2OPTAgent(nn.Module):
 
         self.value_decoder = nn.Sequential(
             nn.Linear(self.embed_dim * 2, self.embed_dim),
-            nn.BatchNorm1d(self.embed_dim),
             nn.ReLU(),
-            nn.Linear(self.embed_dim, 1)
+            nn.BatchNorm1d(self.embed_dim),
+            nn.Linear(self.embed_dim, 1),
         )
 
         self.W_placeholder = nn.Parameter(torch.Tensor(self.embed_dim))
@@ -91,8 +99,10 @@ class TSP2OPTAgent(nn.Module):
         assert embed_dim == self.embed_dim
         device = node_embeddings.device
 
-        best_solution_graph, _ = self.solution_encoder(node_embeddings, state.best_edge_list, batch, return_edge=False)
-        curr_solution_graph, curr_solution_edge = self.solution_encoder(
+        best_solution_graph, _ = self.curr_solution_encoder(
+            node_embeddings, state.best_edge_list, batch, return_edge=False
+        )
+        curr_solution_graph, curr_solution_edge = self.best_solution_encoder(
             node_embeddings, state.curr_edge_list, batch, return_edge=True
         )
 

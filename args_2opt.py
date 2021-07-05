@@ -21,6 +21,9 @@ def get_args(args):
         "--graph_type", type=str, default="knn", choices=["complete", "knn"], help="Graph type to use during training.",
     )
     parser.add_argument(
+        "--graph_knn", type=int, default=10, help="K for knn graph"
+    )
+    parser.add_argument(
         "--batch_size", type=int, default=512, help="Number of instances per batch during training",
     )
     parser.add_argument(

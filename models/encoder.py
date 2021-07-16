@@ -110,7 +110,7 @@ class GNNEncoder(nn.Module):
         gnn_layer_list = []
         # norm_list = []
         ff_list = []
-        for _ in range(self.num_layers):
+        for i in range(self.num_layers):
             gnn_layer = TransformerConv(
                 in_channels=self.embed_dim,
                 out_channels=self.embed_dim // self.heads,
@@ -118,15 +118,24 @@ class GNNEncoder(nn.Module):
                 edge_dim=self.embed_dim,
             )
             gnn_layer_list.append(gnn_layer)
-            feed_forward = Sequential(
-                "x, batch",
-                [
-                    (nn.Linear(self.embed_dim, feed_forward_hidden), "x -> x"),
-                    nn.ReLU(),
-                    (GraphNorm(in_channels=feed_forward_hidden), "x, batch -> x"),
-                    nn.Linear(feed_forward_hidden, self.embed_dim),
-                ],
-            )
+            if i < self.num_layers-1:
+                feed_forward = Sequential(
+                    "x, batch",
+                    [
+                        (nn.GELU(), "x -> x"),
+                        (GraphNorm(in_channels=self.embed_dim), "x, batch -> x"),
+                    ],
+                )
+            else:
+                feed_forward = Sequential(
+                    "x, batch",
+                    [
+                        (nn.Linear(self.embed_dim, feed_forward_hidden), "x -> x"),
+                        nn.GELU(),
+                        (GraphNorm(in_channels=feed_forward_hidden), "x, batch -> x"),
+                        nn.Linear(feed_forward_hidden, self.embed_dim),
+                    ],
+                )
             ff_list.append(feed_forward)
 
         self.gnn_layer_list = nn.ModuleList(gnn_layer_list)
@@ -151,8 +160,8 @@ class GNNEncoder(nn.Module):
         batch = data.batch
 
         for gnn_layer, ff in zip(self.gnn_layer_list, self.ff_list):
-            x = checkpoint(gnn_layer, x, edge_index, edge_attr)
-            x = checkpoint(ff, x, batch)
+            x = gnn_layer(x, edge_index, edge_attr)
+            x = ff(x, batch)
 
         node_embeddings, dense_mask = to_dense_batch(x, data.batch)
         assert dense_mask.all(), "For now only support a batch of graphs with the same number of nodes"
@@ -213,7 +222,7 @@ class TourEncoder(nn.Module):
         for _ in range(self.num_layers):
             x_dir_0 = checkpoint(self.gnn_layer, x_dir_0, edge_index)
             x_dir_1 = checkpoint(self.reversed_gnn_layer, x_dir_1, reversed_edge_index)
-        x = F.relu(x_dir_0 + x_dir_1)
+        x = F.gelu(x_dir_0 + x_dir_1)
         x = self.norm_out(x, batch)
         tour_embeddings = self.pooling_func(x, batch)
 
@@ -274,7 +283,7 @@ class EdgeFeatureExtractor(MessagePassing):
 
         # x = self.norm_x(node_x + solution_x, batch)
         # x = F.relu(x)
-        x = F.relu(node_x+solution_x)
+        x = F.gelu(node_x+solution_x)
         x = self.norm_x(x, batch)
 
         self._batch = batch
@@ -290,7 +299,7 @@ class EdgeFeatureExtractor(MessagePassing):
         edge_embedding = x_i + x_j  # self.x_i_lin(x_i) + self.x_j_lin(x_j)
 
         edge_embedding = self.edge_lin(edge_embedding)
-        edge_embedding = F.relu(edge_embedding)
+        edge_embedding = F.gelu(edge_embedding)
         edge_embedding = self.norm_edge(edge_embedding, self._batch)
 
         self._batch = None

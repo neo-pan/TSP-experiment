@@ -107,9 +107,8 @@ class GNNEncoder(nn.Module):
         assert (self.embed_dim % self.heads) == 0
         self.pooling_func = get_pooling_func(pooling_method)
         self.norm_class = get_normalization_class(normalization)
-        gnn_layer_list = []
-        # norm_list = []
-        ff_list = []
+        self.gnn_layer_list = nn.ModuleList()
+        self.norm_list = nn.ModuleList()
         for i in range(self.num_layers):
             gnn_layer = TransformerConv(
                 in_channels=self.embed_dim,
@@ -117,29 +116,19 @@ class GNNEncoder(nn.Module):
                 heads=self.heads,
                 edge_dim=self.embed_dim,
             )
-            gnn_layer_list.append(gnn_layer)
-            if i < self.num_layers-1:
-                feed_forward = Sequential(
-                    "x, batch",
-                    [
-                        (nn.GELU(), "x -> x"),
-                        (GraphNorm(in_channels=self.embed_dim), "x, batch -> x"),
-                    ],
-                )
-            else:
-                feed_forward = Sequential(
-                    "x, batch",
-                    [
-                        (nn.Linear(self.embed_dim, feed_forward_hidden), "x -> x"),
-                        nn.GELU(),
-                        (GraphNorm(in_channels=feed_forward_hidden), "x, batch -> x"),
-                        nn.Linear(feed_forward_hidden, self.embed_dim),
-                    ],
-                )
-            ff_list.append(feed_forward)
+            self.gnn_layer_list.append(gnn_layer)
+            self.norm_list.append(GraphNorm(in_channels=self.embed_dim))
 
-        self.gnn_layer_list = nn.ModuleList(gnn_layer_list)
-        self.ff_list = nn.ModuleList(ff_list)
+        self.feed_forward = Sequential(
+            "x, batch",
+            [
+                (nn.Linear(self.embed_dim, feed_forward_hidden), "x -> x"),
+                nn.GELU(),
+                # (GraphNorm(in_channels=feed_forward_hidden), "x, batch -> x"),
+                nn.Linear(feed_forward_hidden, self.embed_dim),
+            ],
+        )
+        self.ff_norm = GraphNorm(in_channels=self.embed_dim)
 
     def forward(self, data: Batch) -> Tuple[torch.Tensor, torch.Tensor]:
         """Encode graph input features.
@@ -159,9 +148,17 @@ class GNNEncoder(nn.Module):
         edge_attr = data.edge_attr
         batch = data.batch
 
-        for gnn_layer, ff in zip(self.gnn_layer_list, self.ff_list):
+        for gnn_layer, norm in zip(self.gnn_layer_list, self.norm_list):
+            residual = x
             x = gnn_layer(x, edge_index, edge_attr)
-            x = ff(x, batch)
+            x = F.gelu(x)
+            x = x + residual
+            x = norm(x, batch)
+
+        residual = x
+        x = self.feed_forward(x, batch)
+        x += residual
+        x = self.ff_norm(x, batch)
 
         node_embeddings, dense_mask = to_dense_batch(x, data.batch)
         assert dense_mask.all(), "For now only support a batch of graphs with the same number of nodes"
@@ -222,6 +219,7 @@ class TourEncoder(nn.Module):
         for _ in range(self.num_layers):
             x_dir_0 = checkpoint(self.gnn_layer, x_dir_0, edge_index)
             x_dir_1 = checkpoint(self.reversed_gnn_layer, x_dir_1, reversed_edge_index)
+
         x = F.gelu(x_dir_0 + x_dir_1)
         x = self.norm_out(x, batch)
         tour_embeddings = self.pooling_func(x, batch)
@@ -252,8 +250,6 @@ class EdgeFeatureExtractor(MessagePassing):
 
         self.node_lin = nn.Linear(self.in_channels, self.in_channels, self.bias)
         self.solution_lin = nn.Linear(self.in_channels, self.in_channels, self.bias)
-        # self.x_i_lin = nn.Linear(self.in_channels, self.edge_dim, self.bias)
-        # self.x_j_lin = nn.Linear(self.in_channels, self.edge_dim, self.bias)
         self.edge_lin = nn.Linear(self.edge_dim, self.edge_dim, self.bias)
 
         self.norm_x = GraphNorm(self.in_channels)
@@ -267,8 +263,6 @@ class EdgeFeatureExtractor(MessagePassing):
     def reset_parameters(self):
         self.node_lin.reset_parameters()
         self.solution_lin.reset_parameters()
-        # self.x_i_lin.reset_parameters()
-        # self.x_j_lin.reset_parameters()
         self.edge_lin.reset_parameters()
 
     def forward(self, node_x: torch.Tensor, solution_x: torch.Tensor, edge_index: torch.Tensor, batch):
@@ -283,7 +277,7 @@ class EdgeFeatureExtractor(MessagePassing):
 
         # x = self.norm_x(node_x + solution_x, batch)
         # x = F.relu(x)
-        x = F.gelu(node_x+solution_x)
+        x = F.gelu(node_x + solution_x)
         x = self.norm_x(x, batch)
 
         self._batch = batch

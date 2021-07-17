@@ -99,10 +99,10 @@ class TSP2OPTAgent(nn.Module):
         assert embed_dim == self.embed_dim
         device = node_embeddings.device
 
-        best_solution_graph, _ = self.curr_solution_encoder(
+        best_solution_graph, _ = self.best_solution_encoder(
             node_embeddings, state.best_edge_list, batch, return_edge=False
         )
-        curr_solution_graph, curr_solution_edge = self.best_solution_encoder(
+        curr_solution_graph, curr_solution_edge = self.curr_solution_encoder(
             node_embeddings, state.curr_edge_list, batch, return_edge=True
         )
 

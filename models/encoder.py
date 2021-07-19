@@ -168,6 +168,85 @@ class GNNEncoder(nn.Module):
 
         return (node_embeddings, graph_feat)
 
+class TransformerEncoder(nn.Module):
+    def __init__(
+        self,
+        embed_dim: int,
+        num_layers: int,
+        heads: int = 8,
+        normalization: str = "batch",
+        feed_forward_hidden: int = 512,
+        pooling_method: str = "mean",
+    ) -> None:
+        super().__init__()
+        self.embed_dim = embed_dim
+        self.num_layers = num_layers
+        self.heads = heads
+        assert (self.embed_dim % self.heads) == 0
+        self.pooling_func = get_pooling_func(pooling_method)
+        self.norm_class = get_normalization_class(normalization)
+        self.attention_layer_list = nn.ModuleList()
+        self.norm_list = nn.ModuleList()
+        for i in range(self.num_layers):
+            attention_layer = nn.MultiheadAttention(
+                embed_dim=self.embed_dim,
+                num_heads=self.heads,
+                batch_first=True,
+            )
+            self.attention_layer_list.append(attention_layer)
+            self.norm_list.append(GraphNorm(in_channels=self.embed_dim))
+
+        self.feed_forward = Sequential(
+            "x, batch",
+            [
+                (nn.Linear(self.embed_dim, feed_forward_hidden), "x -> x"),
+                nn.GELU(),
+                # (GraphNorm(in_channels=feed_forward_hidden), "x, batch -> x"),
+                nn.Linear(feed_forward_hidden, self.embed_dim),
+            ],
+        )
+        self.ff_norm = GraphNorm(in_channels=self.embed_dim)
+
+    def forward(self, data: Batch) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Encode graph input features.
+        
+        Get node_embedding, graph_embedding.
+        Only invoke once in a full batch trajectory.
+
+        Args:
+            data: a torch_geometric batch of graphs
+
+        Returns:
+            node_embeddings: encodded graph node features, shape->[batch_size, node_num, embed_dim]
+            graph_feat: graph features produced by pooling function, shape->[batch_size, embed_dim]
+        """
+        x = data.x
+        edge_index = data.edge_index
+        edge_attr = data.edge_attr
+        batch = data.batch
+
+        for attention_layer, norm in zip(self.attention_layer_list, self.norm_list):
+            residual = x
+            x, _ = to_dense_batch(x, batch)
+            x, _ = attention_layer(x, x, x, need_weights=False)
+            x = x.flatten(0, 1)
+            x = F.gelu(x)
+            x = x + residual
+            x = norm(x, batch)
+
+        residual = x
+        x = self.feed_forward(x, batch)
+        x += residual
+        x = self.ff_norm(x, batch)
+
+        node_embeddings, dense_mask = to_dense_batch(x, data.batch)
+        assert dense_mask.all(), "For now only support a batch of graphs with the same number of nodes"
+
+        # Pooling graph features
+        graph_feat = self.pooling_func(x, data.batch)
+
+        return (node_embeddings, graph_feat)
+
 
 class TourEncoder(nn.Module):
     def __init__(
@@ -190,11 +269,8 @@ class TourEncoder(nn.Module):
         self.gnn_layer = GatedGraphConv(out_channels=self.embed_dim, num_layers=1)
         self.reversed_gnn_layer = GatedGraphConv(out_channels=self.embed_dim, num_layers=1)
 
-        self.edge_extractor = EdgeFeatureExtractor(in_channels=self.embed_dim, edge_dim=self.embed_dim)
-
     def forward(
-        self, dense_x: torch.Tensor, dense_edge_index: torch.Tensor, batch: torch.Tensor, return_edge: bool = False
-    ):
+        self, dense_x: torch.Tensor, dense_edge_index: torch.Tensor, batch: torch.Tensor):
         assert dense_x.dim() == dense_edge_index.dim()
         assert dense_x.size(0) == dense_edge_index.size(0)  # batch_size
         assert dense_x.size(1) == dense_edge_index.size(1)  # graph_size
@@ -222,16 +298,11 @@ class TourEncoder(nn.Module):
 
         x = F.gelu(x_dir_0 + x_dir_1)
         x = self.norm_out(x, batch)
+
+        node_embeddings, _ = to_dense_batch(x, batch)
         tour_embeddings = self.pooling_func(x, batch)
 
-        dense_edge_embeddings = None
-        if return_edge:
-            edge_embeddings = self.edge_extractor(node_x=node_x, solution_x=x, edge_index=edge_index, batch=batch)
-            assert edge_embeddings.dim() == 2
-            assert edge_embeddings.size(0) == batch_size * graph_size
-            dense_edge_embeddings = edge_embeddings.reshape(batch_size, graph_size, -1)
-
-        return tour_embeddings, dense_edge_embeddings
+        return tour_embeddings, node_embeddings
 
 
 class EdgeFeatureExtractor(MessagePassing):

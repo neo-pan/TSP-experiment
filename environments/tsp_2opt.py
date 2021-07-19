@@ -9,19 +9,22 @@ FLOAT_SCALE = 10000
 
 
 class TSP2OPTState(NamedTuple):
-    curr_edge_list: torch.Tensor
+    curr_tour: torch.Tensor
     curr_tour_len: torch.Tensor
-    best_edge_list: torch.Tensor
+    curr_edge_list: torch.Tensor
+    best_tour: torch.Tensor
     best_tour_len: torch.Tensor
+    best_edge_list: torch.Tensor
 
 
 class TSP2OPTEnv(_BaseEnv):
-    def __init__(self, T: int = None, node_pos: torch.Tensor = None, init_tour: torch.Tensor = None) -> None:
+    def __init__(self, T: int = None, node_pos: torch.Tensor = None, init_tour: torch.Tensor = None,) -> None:
         super().__init__()
         self._need_reset = True
         if T is not None and node_pos is not None:
             self.reset(T, node_pos, init_tour)
 
+    @torch.no_grad()
     def step(self, action: torch.Tensor) -> Tuple[NamedTuple, torch.Tensor, bool, dict]:
         assert not self._need_reset
         assert list(action.shape) == [self.batch_size, 2]
@@ -29,7 +32,7 @@ class TSP2OPTEnv(_BaseEnv):
 
         assert action.max() < self.graph_size
         assert (action[:, 0] != action[:, 1]).all()
-        assert ((action.max(1).values - action.min(1).values) != 1).all()
+        # assert ((action.max(1).values - action.min(1).values) != 1).all()
 
         # take 2-opt action
         self._step_count += 1
@@ -53,20 +56,20 @@ class TSP2OPTEnv(_BaseEnv):
 
         return (
             TSP2OPTState(
-                curr_edge_list=self.curr_edge_list.clone(),
+                curr_tour=self.curr_tour.clone(),
                 curr_tour_len=self.curr_tour_len.float() / FLOAT_SCALE,
-                best_edge_list=self.best_edge_list.clone(),
+                curr_edge_list=self.curr_edge_list.clone(),
+                best_tour=self.best_tour.clone(),
                 best_tour_len=self.best_tour_len.float() / FLOAT_SCALE,
+                best_edge_list=self.best_edge_list.clone(),
             ),
             reward,
             self.done,
             {"best_updated": best_updated},
         )
 
+    @torch.no_grad()
     def apply_2opt(self, action: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        # gather removed edges from previous edge list
-        edge_to_remove = self.curr_edge_list.gather(1, action[..., None].expand(self.batch_size, 2, 2))
-
         # get mask of partial tour that need flip
         low = action[:, 0][:, None].expand(self.batch_size, self.graph_size)
         high = action[:, 1][:, None].expand(self.batch_size, self.graph_size)
@@ -78,13 +81,8 @@ class TSP2OPTEnv(_BaseEnv):
         self.curr_tour.masked_scatter_(mask, flipped_part)
         self.curr_edge_list = torch.stack([self.curr_tour, self.curr_tour.roll(-1, [1])], dim=2)
 
-        # gather new edges from current edge list
-        edge_to_add = self.curr_edge_list.gather(1, action[..., None].expand(self.batch_size, 2, 2))
-
         # compute new tour length
-        self.curr_tour_len = (
-            self.curr_tour_len - self._get_len_of_edge_list(edge_to_remove) + self._get_len_of_edge_list(edge_to_add)
-        )
+        self.curr_tour_len = self._get_len_of_edge_list(self.curr_edge_list)
 
     @property
     def done(self) -> bool:
@@ -95,6 +93,7 @@ class TSP2OPTEnv(_BaseEnv):
             return True
         return False
 
+    @torch.no_grad()
     def random_action(self) -> torch.Tensor:
         assert not self._need_reset
         mask = torch.ones((self.batch_size, self.graph_size), device=self.device)
@@ -108,6 +107,7 @@ class TSP2OPTEnv(_BaseEnv):
 
         return action
 
+    @torch.no_grad()
     def reset(self, T: int, node_pos: torch.Tensor, init_tour: torch.Tensor = None) -> TSP2OPTState:
         if self._need_reset:
             self._need_reset = False
@@ -137,12 +137,15 @@ class TSP2OPTEnv(_BaseEnv):
         self.best_tour_len = self.curr_tour_len.clone()
 
         return TSP2OPTState(
-            curr_edge_list=self.curr_edge_list.clone(),
+            curr_tour=self.curr_tour.clone(),
             curr_tour_len=self.curr_tour_len.float() / FLOAT_SCALE,
-            best_edge_list=self.best_edge_list.clone(),
+            curr_edge_list=self.curr_edge_list.clone(),
+            best_tour=self.best_tour.clone(),
             best_tour_len=self.best_tour_len.float() / FLOAT_SCALE,
+            best_edge_list=self.best_edge_list.clone(),
         )
 
+    @torch.no_grad()
     def _get_len_of_edge_list(self, edge_list: torch.Tensor) -> torch.Tensor:
         assert edge_list.dim() == 3
         assert edge_list.size(0) == self.batch_size
@@ -151,7 +154,7 @@ class TSP2OPTEnv(_BaseEnv):
 
         return (
             self._distance_matrix.gather(
-                1, edge_list[..., 0][..., None].expand((self.batch_size, num_edge, self.graph_size))
+                1, edge_list[..., 0][..., None].expand((self.batch_size, num_edge, self.graph_size)),
             )
             .gather(2, edge_list[..., 1][..., None])
             .sum(1)

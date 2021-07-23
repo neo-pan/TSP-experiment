@@ -5,7 +5,7 @@ import torch.nn.functional as F
 
 from typing import Any, NamedTuple, Tuple
 from torch_geometric.data import Data, Batch
-from .encoder import TourEncoder, cal_size_list, MLP,GNNEncoder, TransformerEncoder
+from .encoder import TourEncoder, cal_size_list, MLP,GNNEncoder, TransformerEncoder, PETourEncoder
 from .decoder import AttentionDecoder, TransformerDecoder
 
 
@@ -29,7 +29,7 @@ class TSP2OPTAgent(nn.Module):
         self.node_embedder = nn.Linear(self.node_dim, self.embed_dim)
         self.edge_embedder = nn.Linear(self.edge_dim, self.embed_dim)
 
-        self.encoder = TransformerEncoder(
+        self.encoder = GNNEncoder(
             self.embed_dim,
             self.num_gnn_layers,
             self.encoder_num_heads,
@@ -37,7 +37,7 @@ class TSP2OPTAgent(nn.Module):
             pooling_method=self.pooling_method,
         )
 
-        self.curr_solution_encoder = TourEncoder(
+        self.curr_solution_encoder = PETourEncoder(
             self.embed_dim,
             self.tour_gnn_layers,
             self.encoder_num_heads,
@@ -45,7 +45,7 @@ class TSP2OPTAgent(nn.Module):
             pooling_method=args.tour_pooling_method,
         )
 
-        self.best_solution_encoder = TourEncoder(
+        self.best_solution_encoder = PETourEncoder(
             self.embed_dim,
             self.tour_gnn_layers,
             self.encoder_num_heads,
@@ -101,13 +101,12 @@ class TSP2OPTAgent(nn.Module):
         device = node_embeddings.device
 
         best_solution_graph, _ = self.best_solution_encoder(
-            node_embeddings, state.best_edge_list, batch
+            node_embeddings, state.best_tour, batch
         )
         curr_solution_graph, curr_solution_node = self.curr_solution_encoder(
-            node_embeddings, state.curr_edge_list, batch
+            node_embeddings, state.curr_tour, batch
         )
 
-        curr_solution_node = curr_solution_node.gather(dim=1, index=state.curr_tour.unsqueeze(-1).expand_as(curr_solution_node))
         assert list(curr_solution_node.size()) == list(node_embeddings.size())
 
         values = self.value_decoder(torch.cat([best_solution_graph, curr_solution_graph], dim=-1))

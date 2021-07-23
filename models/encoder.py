@@ -150,7 +150,7 @@ class GNNEncoder(nn.Module):
 
         for gnn_layer, norm in zip(self.gnn_layer_list, self.norm_list):
             residual = x
-            x = gnn_layer(x, edge_index, edge_attr)
+            x = checkpoint(gnn_layer, x, edge_index, edge_attr)
             x = F.gelu(x)
             x = x + residual
             x = norm(x, batch)
@@ -167,6 +167,7 @@ class GNNEncoder(nn.Module):
         graph_feat = self.pooling_func(x, data.batch)
 
         return (node_embeddings, graph_feat)
+
 
 class TransformerEncoder(nn.Module):
     def __init__(
@@ -188,11 +189,7 @@ class TransformerEncoder(nn.Module):
         self.attention_layer_list = nn.ModuleList()
         self.norm_list = nn.ModuleList()
         for i in range(self.num_layers):
-            attention_layer = nn.MultiheadAttention(
-                embed_dim=self.embed_dim,
-                num_heads=self.heads,
-                batch_first=True,
-            )
+            attention_layer = nn.MultiheadAttention(embed_dim=self.embed_dim, num_heads=self.heads, batch_first=True,)
             self.attention_layer_list.append(attention_layer)
             self.norm_list.append(GraphNorm(in_channels=self.embed_dim))
 
@@ -269,8 +266,7 @@ class TourEncoder(nn.Module):
         self.gnn_layer = GatedGraphConv(out_channels=self.embed_dim, num_layers=1)
         self.reversed_gnn_layer = GatedGraphConv(out_channels=self.embed_dim, num_layers=1)
 
-    def forward(
-        self, dense_x: torch.Tensor, dense_edge_index: torch.Tensor, batch: torch.Tensor):
+    def forward(self, dense_x: torch.Tensor, dense_edge_index: torch.Tensor, batch: torch.Tensor):
         assert dense_x.dim() == dense_edge_index.dim()
         assert dense_x.size(0) == dense_edge_index.size(0)  # batch_size
         assert dense_x.size(1) == dense_edge_index.size(1)  # graph_size
@@ -371,3 +367,49 @@ class EdgeFeatureExtractor(MessagePassing):
         self._edge = edge_embedding
 
         return x_i
+
+
+class PETourEncoder(nn.Module):
+    def __init__(self, embed_dim, *args, **kwargs):
+        super().__init__()
+        self.embed_dim = embed_dim
+        self.PE = generate_positional_encoding(embed_dim, 100)
+        pooling_method = kwargs.get("pooling_method")
+        self.pooling_func = get_pooling_func(pooling_method)
+
+    def forward(self, dense_x: torch.Tensor, tour: torch.Tensor, batch: torch.Tensor):
+        assert dense_x.dim() == tour.dim() + 1
+        assert dense_x.size(0) == tour.size(0)  # batch_size
+        assert dense_x.size(1) == tour.size(1)  # graph_size
+        assert dense_x.size(2) == self.embed_dim
+        batch_size = tour.size(0)
+        graph_size = tour.size(1)
+
+        PE = (
+            self.PE[0:graph_size, :].unsqueeze(0).repeat(batch_size, 1, 1).to(dense_x.device)
+        )  # (batch_size, graph_size, embed_dim)
+        tour_x = dense_x.gather(dim=1, index=tour.unsqueeze(-1).expand_as(dense_x)) + PE
+
+        node_x = tour_x.flatten(0, 1)
+        node_embeddings = tour_x
+        tour_embeddings = self.pooling_func(node_x, batch)
+
+        return tour_embeddings, node_embeddings
+
+
+def generate_positional_encoding(d_model, max_len):
+    """
+    Create standard transformer PEs.
+    Inputs :  
+      d_model is a scalar correspoding to the hidden dimens
+      ion
+      max_len is the maximum length of the sequence
+    Output :  
+      pe of size (max_len, d_model), where d_model=dim_emb, max_len=1000
+    """
+    pe = torch.zeros(max_len, d_model)
+    position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+    div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-torch.log(torch.tensor(10000.0)) / d_model))
+    pe[:, 0::2] = torch.sin(position * div_term)
+    pe[:, 1::2] = torch.cos(position * div_term)
+    return pe

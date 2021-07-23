@@ -270,6 +270,7 @@ def myMHA(Q, K, V, nb_heads, mask=None, clip_value=None):
         assert list(mask.size()) == [bsz, 1, nb_nodes], mask.size()
         if nb_heads>1:
             mask = torch.repeat_interleave(mask, repeats=nb_heads, dim=0) # size(mask)=(bsz*nb_heads, 1, nb_nodes+1)
+            assert list(mask.size()) == [bsz*nb_heads, 1, nb_nodes]
         logits = logits.masked_fill(mask, torch.finfo(logits.dtype).min) # size(attn_weights)=(bsz*nb_heads, 1, nb_nodes+1)
     attn_weights = torch.softmax(logits, dim=-1) # size(attn_weights)=(bsz*nb_heads, 1, nb_nodes+1)
     attn_output = torch.bmm(attn_weights, V) # size(attn_output)=(bsz*nb_heads, 1, dim_emb//nb_heads)
